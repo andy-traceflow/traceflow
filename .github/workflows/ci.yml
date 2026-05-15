@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Lint + tests (incl. tenant isolation)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # pgvector/pgvector ships Postgres + the `vector` extension our
+        # KB migrations need. Standard postgres:16 wouldn't apply
+        # migration 005.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: traceflow_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: traceflow_test
+      TRACEFLOW_TEST_DB_URL: postgresql://postgres:postgres@localhost:5432/traceflow_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install pyyaml  # used by scripts/onboard_client.py
+
+      - name: Wait for Postgres
+        run: |
+          for i in {1..30}; do
+            pg_isready -h localhost -U postgres && break
+            sleep 1
+          done
+
+      - name: Bootstrap Supabase auth stubs
+        run: psql -h localhost -U postgres -d traceflow_test -f tests/sql/bootstrap_supabase_stubs.sql
+
+      - name: Apply migrations in order
+        run: |
+          set -e
+          for f in $(ls migrations/*.sql | sort); do
+            echo "==> applying $f"
+            psql -h localhost -U postgres -d traceflow_test -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      - name: Lint
+        run: ruff check .
+
+      # The full test suite. tests/test_tenant_isolation.py runs against
+      # the bootstrapped Postgres and HARD-FAILS on any cross-tenant leak.
+      - name: Run tests
+        run: pytest -v

@@ -1,0 +1,56 @@
+services:
+  - type: web
+    name: traceflow-api
+    runtime: python
+    plan: starter
+    region: oregon
+    buildCommand: pip install -e .
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - fromGroup: traceflow-secrets
+
+  - type: cron
+    name: adapter-health-check
+    runtime: python
+    schedule: "0 * * * *"  # hourly
+    buildCommand: pip install -e .
+    startCommand: python -m app.jobs.adapter_health
+    envVars:
+      - fromGroup: traceflow-secrets
+
+envVarGroups:
+  - name: traceflow-secrets
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_DB_URL
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: NOTIFY_FROM_EMAIL
+        sync: false
+      - key: ADMIN_JWT_SECRET
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+      - key: BASE_URL
+        sync: false
+      - key: LOG_LEVEL
+        value: INFO
