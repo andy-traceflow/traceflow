@@ -73,7 +73,39 @@ Reversing the **opposite** direction (collapsing project-per-tenant into shared)
 See:
 - `docs/architecture.md` § Multi-tenancy model
 - `.claude/skills/multi-tenant-arch/SKILL.md`
-- `tests/test_tenant_isolation.py` (to be created)
+- `tests/test_tenant_isolation.py` — exists; 31 tests passing against live Supabase
+
+## Implementation gotchas discovered (2026-05-20)
+
+The decision still stands, but implementing it on Supabase surfaced three things the original ADR didn't anticipate. Documenting them here so future implementers (and future Claude sessions) don't re-discover them the hard way.
+
+### Gotcha 1: `ENABLE ROW LEVEL SECURITY` is not enough — the connecting *role* matters
+
+Supabase's default `postgres` role has the `bypassrls=true` attribute set at the role level. PostgreSQL skips RLS for any role with that attribute, *regardless* of what the table says. The FastAPI service connects as `postgres` via `SUPABASE_DB_URL`, so for ~12 hours of integration work, every policy we wrote was being silently bypassed. Only caught by running the isolation suite against the live DB for the first time.
+
+**Resolution:** `src/app/db.py:get_connection()` opens a transaction and `SET ROLE authenticated` before yielding the connection. `authenticated` has `bypassrls=false` and Supabase grants it full DML on every public table. The role switch is transaction-scoped so it reverts on request completion.
+
+### Gotcha 2: Empty-string tenant setting crashes policies
+
+The policy expression `client_id = current_setting('app.current_client_id', true)::uuid` is safe when the setting is *unset* (returns NULL, cast is NULL, row excluded). But it crashes with `ERROR: invalid input syntax for type uuid: ""` when the setting is explicitly cleared to empty string — which is what `SET LOCAL app.current_client_id = ''` produces.
+
+**Resolution:** migration 011 wraps every policy in `NULLIF(current_setting(...), '')::uuid`. Empty strings collapse to NULL → row excluded silently.
+
+### Gotcha 3: `FORCE ROW LEVEL SECURITY` is still worth applying as defense in depth
+
+Even with the role switch, adding `FORCE ROW LEVEL SECURITY` (migration 010) means RLS applies to the table owner too. If any future code path accidentally drops the role switch, FORCE prevents the policies from being bypassed by owner-level access. Cheap, no observable behavior change, removes a foot-gun.
+
+### Net pattern (what the rest of the codebase has to do)
+
+```python
+# Backend code that needs tenant-scoped queries:
+async with set_tenant_context(client_id) as conn:
+    # `conn` is in a transaction, `SET ROLE authenticated`,
+    # and `app.current_client_id` is set. RLS policies will filter.
+    await conn.execute("...")
+```
+
+Don't open raw pool connections without this wrapper for tenant-scoped queries.
 
 ## Decision review trigger
 

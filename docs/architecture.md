@@ -1,7 +1,7 @@
 # TraceFlow Architecture
 
-**Status:** Phase 0 (pre-build) — this document describes the target architecture
-**Last updated:** 2026-05-13
+**Status:** Phase 0 — platform skeleton built, deployed to Render against live Supabase, integration tests passing
+**Last updated:** 2026-05-20
 
 ---
 
@@ -76,40 +76,92 @@ For payload-based identification (e.g., a Twilio webhook where the path doesn't 
 
 ### Tenant resolver middleware
 
-FastAPI middleware runs before every request:
+FastAPI middleware runs before every request (`src/app/middleware/tenant_resolver.py`):
 
-1. Extract `client_id` from URL path or payload
-2. Load client record from `clients` table; abort 404 if not found or inactive
-3. Verify webhook signature (per-client secret)
-4. Set Postgres session variable: `SET LOCAL app.current_client_id = '<uuid>'`
-5. Hand off to route handler
+1. Extract `client_id` from the URL path via regex (path-based for every webhook URL we publish)
+2. For `/webhooks/*` paths: verify the webhook signature using the per-client secret from `client_configs.webhook_signing_secrets`
+3. Set the request-scoped `_current_tenant` ContextVar to the resolved `client_id`
+4. Hand off to the route handler
+5. On exit, reset the ContextVar
 
-Any database query in the request lifecycle is now automatically filtered by RLS policies that check `app.current_client_id`.
+Path patterns the regex recognizes (see `tests/test_tenant_resolver.py` for the full matrix):
+
+```
+/webhooks/twilio/{channel}/{client_id}        # e.g. /webhooks/twilio/sms/<uuid>
+/webhooks/shopify/{client_id}
+/webhooks/crm/{provider}/{client_id}
+/webhooks/generic/{client_id}/{slug}
+```
+
+Anything not matching (e.g. `/health`, `/docs`, `/api/kb`) passes through with no tenant context — those routes handle their own auth or are public.
+
+### How tenant context actually reaches the database
+
+The ContextVar set by the middleware is read inside `db.get_connection()`. Each connection acquisition opens a transaction, switches roles, sets the session variable, and yields the connection to the caller. When the caller's `async with` block exits, the transaction ends and everything reverts — no state can leak into the next request that acquires the same pooled connection.
+
+```python
+async with _pool.acquire() as conn:
+    async with conn.transaction():
+        await conn.execute("SET ROLE authenticated")
+        client_id = _current_tenant.get()
+        if client_id is not None:
+            await conn.execute(
+                "SELECT set_config('app.current_client_id', $1, true)",
+                str(client_id),
+            )
+        yield conn
+```
+
+### Why `SET ROLE authenticated` (the BYPASSRLS gotcha)
+
+**This is non-obvious and was caught by the live tenant isolation test suite, not by code review.** Supabase ships its `postgres` role with the `bypassrls=true` attribute. PostgreSQL skips RLS *entirely* for any role with that attribute — regardless of `ENABLE ROW LEVEL SECURITY` or even `FORCE ROW LEVEL SECURITY` on the table. The FastAPI service connects via `SUPABASE_DB_URL` as `postgres`, so without further action, every query is unfiltered admin access.
+
+The fix is to `SET ROLE authenticated` per-request. The `authenticated` role has `bypassrls=false` and Supabase grants it full DML on every public table by default. The role switch is transaction-bounded so it reverts when the request ends.
+
+Verify on any Supabase project with:
+
+```sql
+SELECT rolname, rolbypassrls FROM pg_roles
+WHERE rolname IN ('postgres', 'authenticated', 'anon', 'service_role');
+
+-- Expected:
+--  postgres      | t   ← bypasses RLS
+--  service_role  | t   ← bypasses RLS (intended for backend admin)
+--  authenticated | f   ← respects RLS
+--  anon          | f   ← respects RLS
+```
 
 ### Row Level Security
 
 Every tenant-scoped table has:
 
 ```sql
-alter table <table_name> enable row level security;
+ALTER TABLE <table_name> ENABLE ROW LEVEL SECURITY;
+ALTER TABLE <table_name> FORCE  ROW LEVEL SECURITY;   -- migration 010
 
-create policy tenant_isolation on <table_name>
-  for all
-  using (client_id = current_setting('app.current_client_id', true)::uuid);
+CREATE POLICY tenant_isolation ON <table_name>
+    FOR ALL
+    USING (client_id = NULLIF(current_setting('app.current_client_id', true), '')::uuid);
 ```
 
-The `true` second argument to `current_setting` makes it return NULL instead of erroring if unset — this is intentional. Background jobs and admin operations that legitimately span tenants set the variable explicitly per query batch.
+Three details that matter:
 
-### Tests (non-negotiable)
+- **`FORCE ROW LEVEL SECURITY`** (migration 010) — without this, the table *owner* bypasses RLS even when their role has `bypassrls=false`. Belt and suspenders.
+- **`NULLIF(..., '')`** (migration 011) — `current_setting('foo', true)` returns NULL when unset BUT returns `''` when explicitly cleared. Casting `''` to UUID crashes. NULLIF makes the "no tenant context" path silently return zero rows instead of erroring.
+- **`true` (missing_ok) argument** to `current_setting` — keeps the policy expression safe when the setting was never set at all (returns NULL, comparison is NULL, row excluded).
 
-A test suite runs in CI on every commit:
+### Tests (non-negotiable, and running)
 
-- For every API endpoint, authenticate as Client A
-- Attempt to access Client B's data (by ID, by filter, by URL manipulation)
-- Assert all attempts return 404 or empty results
-- Fail the build on any leak
+`tests/test_tenant_isolation.py` runs against the live database in CI (and locally with `TRACEFLOW_TEST_DB_URL` set):
 
-See `tests/test_tenant_isolation.py` (to be created).
+- 13 tenant-scoped tables parametrized: every one must have RLS enabled AND a policy
+- Direct cross-tenant isolation tests for `leads`, `kb_entries`, `messages`, `events` — insert as A, switch to B, assert zero rows
+- "No tenant context → deny all reads" — the empty-string defense path
+- Test bodies `SET ROLE authenticated` to actually exercise RLS (mirrors production code path)
+
+`tests/test_tenant_resolver.py` (28 tests) covers the path-extraction regex for every webhook URL shape — positive/negative cases, partial UUIDs, case sensitivity, trailing slashes.
+
+`tests/test_generic_webhook.py` (16 tests) is the first full integration suite that goes through the FastAPI app via `TestClient` against the live DB. Caught a latent JSONB-codec bug that unit tests had missed.
 
 ---
 
@@ -187,7 +239,7 @@ ADAPTER_REGISTRY: dict[str, CRMAdapter] = {
 **Build order (do not build speculatively):**
 1. GoHighLevel (Phase 0 default; 40% affiliate)
 2. Monday (reuse SEMCO code)
-3. Generic webhook handler (catches everything else)
+3. Generic webhook handler ✅ — built, signature-verified, end-to-end tested (`src/app/webhooks/generic.py`, 16 integration tests)
 4. HubSpot (when first HubSpot client signs)
 5. Jobber / ServiceTitan (when 3+ clients request)
 
@@ -225,7 +277,7 @@ Supported transform types: `value_map`, `regex_replace`, `numeric_scale`, `conca
 
 ### Layer 3: Generic webhook config
 
-The escape hatch for long-tail systems where building a full adapter isn't justified.
+The escape hatch for long-tail systems where building a full adapter isn't justified. **Built and integration-tested as of 2026-05-20.**
 
 ```sql
 create table client_webhook_configs (
@@ -234,7 +286,9 @@ create table client_webhook_configs (
   webhook_slug text not null,            -- 'jobber-lead-created', 'custom-form-x'
   parser_type text not null,             -- 'jsonpath' | 'jq' | 'python_template'
   field_extractors jsonb not null,       -- canonical_field → extraction expression
-  signing_secret text not null,
+  signing_secret text,                   -- nullable when signing_algorithm = 'none'
+  signing_algorithm text not null,       -- 'hmac_sha256' | 'hmac_sha256_timestamped' | 'none'
+  signature_header text,                 -- header name carrying the signature
   unique (client_id, webhook_slug)
 );
 ```
@@ -249,9 +303,24 @@ Example config:
     "phone": "$.customer.phone_primary",
     "service_type": "$.job.category_label",
     "sqft": "$.job.dimensions.area_sqft"
-  }
+  },
+  "signing_secret": "<32+ random chars>",
+  "signing_algorithm": "hmac_sha256",
+  "signature_header": "X-Signature"
 }
 ```
+
+**Supported signing algorithms:**
+
+- `hmac_sha256` — body-hash HMAC. Handler accepts either hex or base64 in the header (tries both before failing) so providers using either convention work without config changes.
+- `hmac_sha256_timestamped` — Stripe-style `t=<ts>,s=<hex>` header. Body is signed as `{ts}.{body}`. Timestamps older than 300s are rejected as replays.
+- `none` — explicit escape hatch for homegrown systems that genuinely cannot sign. Loud-named so config reviewers catch it on purpose.
+
+**Parser types:**
+
+- `jsonpath` — wired, used in tests. Multi-match expressions return the first value.
+- `jq` — reserved (returns empty until the first client requests it; would require adding `jq` Python package as a dep).
+- `python_template` — reserved (sandboxed eval is non-trivial; deferred until needed).
 
 ---
 
