@@ -109,6 +109,24 @@
 - **Where the connection string lives in the new Supabase UI:** the "Connect" button at the top of the dashboard (not under Project Settings → Database, which has been reorganized). Session mode pooler (port 5432) is the right choice for asyncpg because connection state must persist across queries — transaction mode pooler (port 6543) would silently break the `app.current_client_id` RLS plumbing.
 - **Env var drift carried over from earlier Blueprint hiccup:** `ENVIRONMENT`, `BASE_URL`, `ALLOWED_ORIGINS`, and `ADMIN_JWT_SECRET` were all missing from the service when the Blueprint partially failed. All set manually in the dashboard now; documented under the existing drift decision above.
 
+### fix: tenant isolation was silently broken — RLS was being bypassed at the role level
+- **What:** ran `tests/test_tenant_isolation.py` against the live Supabase DB for the first time. 3 of 25 tests failed: Client B could see Client A's `leads`; same on `kb_entries`; "no tenant context → deny all reads" returned rows. The plumbing existed (RLS enabled on every table, policies present) but it wasn't actually enforcing anything.
+- **Root cause #1 (the big one):** Supabase's `postgres` role has `bypassrls=true` set at the role level (`SELECT rolbypassrls FROM pg_roles WHERE rolname='postgres'` returns `t`). PostgreSQL skips RLS entirely for any role with that attribute, *regardless* of `ENABLE ROW LEVEL SECURITY` or `FORCE ROW LEVEL SECURITY` on the table. The production FastAPI service was connecting as `postgres` (via `SUPABASE_DB_URL`), so every query — including the per-request `app.current_client_id` setting — was effectively unfiltered admin access.
+- **Root cause #2 (the smaller one):** when policies tried to cast an empty-string `app.current_client_id` to UUID, the cast raised `invalid input syntax for type uuid: ""` instead of gracefully filtering to zero rows. So the "no tenant context" defense path crashed rather than denying.
+- **Fix:**
+  - `migration 010_force_rls_on_tenant_tables.sql` — `ALTER TABLE ... FORCE ROW LEVEL SECURITY` on all 14 tenant-scoped tables. Necessary but not sufficient on its own (BYPASSRLS at the role level still wins).
+  - `migration 011_null_safe_tenant_policies.sql` — rewrote every tenant_isolation policy to wrap `current_setting('app.current_client_id', true)` in `NULLIF(..., '')` so empty strings collapse to NULL before the UUID cast.
+  - `src/app/db.py` — `get_connection()` now opens an explicit transaction and runs `SET ROLE authenticated` before yielding. `authenticated` has `bypassrls=false` and full DML grants on all our tables (verified via `information_schema.role_table_grants`). The role switch + tenant setting are both transaction-bounded, so they revert cleanly when the request ends — no state can leak into the next request that acquires the same pool connection.
+  - `tests/test_tenant_isolation.py` — fixture setup/teardown stays on `postgres` (admin ops); test bodies switch into `authenticated` to actually exercise RLS.
+- **Verification:** all 25 tests in `test_tenant_isolation.py` now pass against the live Supabase DB. Full suite: 102/102 green.
+- **Lesson:** RLS on Supabase is enforced at *two* levels — the table (`ENABLE ROW LEVEL SECURITY` + optional `FORCE ROW LEVEL SECURITY`) AND the role (`bypassrls` attribute on the connecting role). You must control both. The default `postgres` connection is unsafe for any code that depends on RLS. Always `SET ROLE authenticated` (or a custom non-bypassing role) before running tenant-scoped queries from a backend service.
+
+### build: tenant_resolver middleware checklist item complete
+- **Coverage now in place:**
+  - `tests/test_tenant_isolation.py` (25 tests) — end-to-end RLS enforcement at the DB layer, hardened against the BYPASSRLS issue
+  - `tests/test_tenant_resolver.py` (28 tests) — pure-function path regex extraction for every webhook URL shape we publish (Twilio SMS/voice, Shopify, CRM-per-provider, generic-with-endpoint-segment); positive and negative cases, case sensitivity, trailing slashes, partial UUIDs
+- **Status of the checklist item ("Tenant resolver middleware working — sets `app.current_client_id`"):** ✅ verified working end-to-end. Middleware extracts client_id from path → sets ContextVar → `db.get_connection()` opens a transaction, switches role, sets the session variable → RLS policies filter using the variable → cross-tenant queries return zero rows.
+
 ### milestone: Twilio account provisioned
 - **Account:** created on `andy@traceflow.app`. 2FA + recovery codes pending Andy confirmation.
 - **Phone number:** NOT purchased — per the LLR model, numbers are per-client and purchased at client onboarding, not platform-level.

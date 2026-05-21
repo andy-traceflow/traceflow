@@ -66,22 +66,39 @@ def get_current_tenant() -> UUID | None:
 async def get_connection() -> AsyncIterator[asyncpg.Connection]:
     """Acquire a connection scoped to the current tenant context.
 
-    Sets `app.current_client_id` as a session variable so RLS policies
-    can filter rows. When no tenant is set (e.g. admin operations),
-    the session variable is left unset and RLS denies tenant-scoped
-    reads — admin code must use the service role explicitly.
+    Wraps the connection use in a transaction so the role switch +
+    tenant variable are bounded to this request and revert cleanly on
+    exit (preventing cross-request leakage when pool connections are
+    reused).
+
+    Why the `SET ROLE authenticated`: Supabase's `postgres` role has
+    `bypassrls=true` (see `pg_roles`), which means even `FORCE ROW
+    LEVEL SECURITY` on a table does nothing for queries this connection
+    runs. `authenticated` does NOT have `bypassrls`, so switching into
+    it makes RLS policies actually filter. `authenticated` is granted
+    full DML on every tenant-scoped table by Supabase's default GRANTs.
+
+    Why `SET LOCAL` semantics: both the role switch and the tenant
+    setting are transaction-scoped. When the caller's `async with` block
+    exits, the transaction ends and both revert. Pool connection returns
+    to its baseline (`postgres` role, no tenant setting) — no state can
+    leak into the next request that acquires this same connection.
     """
     if _pool is None:
         raise RuntimeError("DB pool not initialized — call init_pool() first")
 
     async with _pool.acquire() as conn:
-        client_id = _current_tenant.get()
-        if client_id is not None:
-            await conn.execute(
-                "SELECT set_config('app.current_client_id', $1, true)",
-                str(client_id),
-            )
-        yield conn
+        async with conn.transaction():
+            # Inside a transaction, SET ROLE behaves as SET LOCAL ROLE
+            # (reverts on commit/rollback). Same for set_config(..., true).
+            await conn.execute("SET ROLE authenticated")
+            client_id = _current_tenant.get()
+            if client_id is not None:
+                await conn.execute(
+                    "SELECT set_config('app.current_client_id', $1, true)",
+                    str(client_id),
+                )
+            yield conn
 
 
 @asynccontextmanager

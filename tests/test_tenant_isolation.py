@@ -49,8 +49,14 @@ async def conn(db_url: str):
 
 @pytest.fixture
 async def two_clients(conn) -> tuple[UUID, UUID]:
-    """Create two throwaway clients and clean them up after the test."""
+    """Create two throwaway clients and clean them up after the test.
+
+    Setup and teardown run as `postgres` (bypassrls=true) so admin
+    operations aren't blocked by RLS. Each test body switches into
+    the `authenticated` role to actually exercise RLS isolation.
+    """
     a, b = uuid4(), uuid4()
+    await conn.execute("RESET ROLE")
     await conn.execute(
         """
         INSERT INTO clients (id, slug, business_name)
@@ -60,14 +66,24 @@ async def two_clients(conn) -> tuple[UUID, UUID]:
         b, f"test-b-{b}", "Test B",
     )
     yield a, b
+    await conn.execute("RESET ROLE")
     await conn.execute("DELETE FROM clients WHERE id IN ($1, $2)", a, b)
 
 
 async def _set_tenant(conn: asyncpg.Connection, client_id: UUID) -> None:
+    """Switch into the RLS-respecting role and set the tenant context.
+
+    `authenticated` has `bypassrls=false` — without this role switch,
+    queries from `postgres` (the default connection role on Supabase)
+    silently skip RLS entirely.
+    """
+    await conn.execute("SET ROLE authenticated")
     await conn.execute("SELECT set_config('app.current_client_id', $1, false)", str(client_id))
 
 
 async def _clear_tenant(conn: asyncpg.Connection) -> None:
+    """Clear the tenant setting while staying in the RLS-enforcing role."""
+    await conn.execute("SET ROLE authenticated")
     await conn.execute("SELECT set_config('app.current_client_id', '', false)")
 
 
