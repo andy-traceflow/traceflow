@@ -62,6 +62,23 @@ target-version = "py311"
 select = ["E", "F", "I", "B", "UP", "ASYNC"]
 ignore = ["E501"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's `Depends()` is the canonical way to declare dependencies in
+# route handlers. Ruff's B008 rule normally warns about function calls in
+# default arguments — whitelisting these treats them as immutable so the
+# pattern doesn't trip the linter.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Header",
+    "fastapi.Path",
+    "fastapi.Cookie",
+    "fastapi.Body",
+    "fastapi.Form",
+    "fastapi.File",
+    "fastapi.Security",
+]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

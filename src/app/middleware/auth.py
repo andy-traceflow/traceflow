@@ -13,9 +13,9 @@ lookups don't need to bridge sync→async at every call site.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Awaitable, Callable
 
 import jwt
 from fastapi import Depends, HTTPException, status

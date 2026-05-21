@@ -7,8 +7,7 @@ is mocked so the suite runs offline and deterministically.
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -36,8 +35,8 @@ def _make_lead(**overrides: Any) -> Lead:
         "raw_payload": {},
         "qualification_status": QualificationStatus.unqualified,
         "notes": "",
-        "created_at": datetime.now(timezone.utc),
-        "updated_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
     }
     base.update(overrides)
     return Lead(**base)
@@ -48,8 +47,8 @@ def _make_config(client_id, **overrides: Any) -> ClientConfig:
         "client_id": client_id,
         "crm_provider": "monday",
         "crm_credentials": {"api_key": "fake-key", "board_id": "999"},
-        "ai_period_resets_at": datetime.now(timezone.utc),
-        "updated_at": datetime.now(timezone.utc),
+        "ai_period_resets_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
     }
     base.update(overrides)
     return ClientConfig(**base)
@@ -142,8 +141,8 @@ def test_creds_validation_fails_without_required_keys():
     config = ClientConfig(
         client_id=uuid4(),
         crm_credentials={"api_key": "only-the-key"},
-        ai_period_resets_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+        ai_period_resets_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
     with pytest.raises(ValueError, match="board_id"):
         adapter._creds(config)

@@ -23,7 +23,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request, Response
 from jsonpath_ng import parse as jsonpath_parse
 
-from app.db import get_connection, set_tenant_context
+from app.db import set_tenant_context
 from app.models.lead import LeadCreate
 from app.services.webhook_signature import (
     verify_hmac_sha256_base64,

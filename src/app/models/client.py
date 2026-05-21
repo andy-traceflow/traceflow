@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 
-class ClientStatus(str, Enum):
+class ClientStatus(StrEnum):
     active = "active"
     paused = "paused"
     churned = "churned"
     trial = "trial"
 
 
-class ClientTier(str, Enum):
+class ClientTier(StrEnum):
     founding_partner = "founding_partner"
     standard = "standard"
     pro = "pro"

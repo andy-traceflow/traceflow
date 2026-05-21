@@ -57,7 +57,7 @@ def test_extracts_client_id_from_valid_webhook_paths(path: str) -> None:
         "/webhooks/",                                          # missing channel + id
         "/webhooks/twilio/sms",                                 # missing id
         f"/webhooks/twilio/{_VALID}",                           # missing channel segment
-        f"/webhooks/shopify",                                   # missing id
+        "/webhooks/shopify",                                   # missing id
         f"/webhooks/crm/{_VALID}",                              # missing provider segment
         f"/webhooks/generic/{_VALID}",                          # missing endpoint segment
         "/webhooks/twilio/sms/not-a-uuid",                      # malformed id

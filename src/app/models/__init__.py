@@ -3,7 +3,7 @@ from app.models.client_config import ClientConfig
 from app.models.event import Event
 from app.models.kb import KBEntryCreate, KBEntryList, KBEntryRead, KBEntryUpdate
 from app.models.lead import Lead, LeadCreate, LeadUpdate, QualificationStatus
-from app.models.message import Message, MessageDirection, MessageChannel
+from app.models.message import Message, MessageChannel, MessageDirection
 
 __all__ = [
     "Client",

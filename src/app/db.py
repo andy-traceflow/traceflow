@@ -13,9 +13,9 @@ explicitly scope a block of work to one tenant.
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from typing import AsyncIterator
 from uuid import UUID
 
 import asyncpg

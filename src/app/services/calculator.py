@@ -37,7 +37,6 @@ from uuid import UUID
 
 from app.db import get_connection
 
-
 # ---------------------------------------------------------------------------
 # Pure data structures — engine is testable without DB
 # ---------------------------------------------------------------------------
