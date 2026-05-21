@@ -127,6 +127,16 @@
   - `tests/test_tenant_resolver.py` (28 tests) — pure-function path regex extraction for every webhook URL shape we publish (Twilio SMS/voice, Shopify, CRM-per-provider, generic-with-endpoint-segment); positive and negative cases, case sensitivity, trailing slashes, partial UUIDs
 - **Status of the checklist item ("Tenant resolver middleware working — sets `app.current_client_id`"):** ✅ verified working end-to-end. Middleware extracts client_id from path → sets ContextVar → `db.get_connection()` opens a transaction, switches role, sets the session variable → RLS policies filter using the variable → cross-tenant queries return zero rows.
 
+### build: tenant isolation test suite checklist item complete + CI bootstrap fixed
+- **Found:** CI had been silently failing for ~4 pushes today. `tests/sql/bootstrap_supabase_stubs.sql` created the `auth.users` table but **didn't create the `authenticated` / `anon` / `service_role` roles** that Supabase ships by default. Two failure points in CI:
+  - Migration 008 (`CREATE POLICY ... TO authenticated`) — role didn't exist → migration step crashed
+  - Production code's `SET ROLE authenticated` in `db.py` (added today) would have crashed in CI even if migration 008 had been fixed
+- **Fixed:** bootstrap now creates all three roles with the right attributes (no bypassrls on `anon`/`authenticated`, BYPASSRLS on `service_role`), grants schema usage, and sets `ALTER DEFAULT PRIVILEGES` so all tables created by subsequent migrations automatically get DML grants for these roles. Mirrors what Supabase does on managed projects.
+- **Test coverage gaps closed:**
+  - Added `kb_chunks` and `user_permissions` to `TENANT_SCOPED_TABLES` — parametrized RLS-enabled + policy-exists checks now cover all 13 tenant-scoped tables instead of 11
+  - Added direct cross-tenant isolation tests for `messages` and `events` — both are high-traffic, customer-content-carrying tables where a leak would be especially damaging
+- **Status of the checklist item ("Tenant isolation test suite"):** ✅ closed. Full suite: 108/108 passing locally against live Supabase. CI should now go green on this push.
+
 ### milestone: Twilio account provisioned
 - **Account:** created on `andy@traceflow.app`. 2FA + recovery codes pending Andy confirmation.
 - **Phone number:** NOT purchased — per the LLR model, numbers are per-client and purchased at client onboarding, not platform-level.

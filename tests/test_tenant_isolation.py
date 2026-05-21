@@ -31,9 +31,11 @@ TENANT_SCOPED_TABLES = [
     "events",
     "kb_entries",
     "kb_documents",
+    "kb_chunks",
     "sync_log",
     "product_yields",
     "calculator_configs",
+    "user_permissions",
 ]
 
 
@@ -134,6 +136,60 @@ async def test_kb_entries_are_tenant_isolated(conn, two_clients: tuple[UUID, UUI
     await _set_tenant(conn, client_b)
     rows = await conn.fetch("SELECT id FROM kb_entries WHERE id = $1", entry_id)
     assert rows == [], f"LEAK: Client B saw Client A's kb_entry {entry_id}"
+
+
+@pytest.mark.asyncio
+async def test_messages_are_tenant_isolated(conn, two_clients: tuple[UUID, UUID]) -> None:
+    """High-traffic table — every inbound SMS, every outbound reply
+    lands here. A leak would expose customer conversations across tenants."""
+    client_a, client_b = two_clients
+
+    await _set_tenant(conn, client_a)
+    lead_id = await conn.fetchval(
+        """
+        INSERT INTO leads (client_id, source_system, raw_payload)
+        VALUES ($1, 'test', '{}'::jsonb)
+        RETURNING id
+        """,
+        client_a,
+    )
+    msg_id = await conn.fetchval(
+        """
+        INSERT INTO messages (client_id, lead_id, direction, channel, body)
+        VALUES ($1, $2, 'inbound', 'sms', 'client_a_only')
+        RETURNING id
+        """,
+        client_a,
+        lead_id,
+    )
+    assert msg_id is not None
+
+    await _set_tenant(conn, client_b)
+    rows = await conn.fetch("SELECT id FROM messages WHERE id = $1", msg_id)
+    assert rows == [], f"LEAK: Client B saw Client A's message {msg_id}"
+
+
+@pytest.mark.asyncio
+async def test_events_are_tenant_isolated(conn, two_clients: tuple[UUID, UUID]) -> None:
+    """Event stream carries debugging payloads — including, sometimes,
+    contents of outbound messages and CRM payloads. RLS is the primary
+    isolation here."""
+    client_a, client_b = two_clients
+
+    await _set_tenant(conn, client_a)
+    event_id = await conn.fetchval(
+        """
+        INSERT INTO events (client_id, event_type, payload)
+        VALUES ($1, 'test_event', '{"marker": "client_a_only"}'::jsonb)
+        RETURNING id
+        """,
+        client_a,
+    )
+    assert event_id is not None
+
+    await _set_tenant(conn, client_b)
+    rows = await conn.fetch("SELECT id FROM events WHERE id = $1", event_id)
+    assert rows == [], f"LEAK: Client B saw Client A's event {event_id}"
 
 
 @pytest.mark.asyncio
