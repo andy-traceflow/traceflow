@@ -79,6 +79,22 @@
 - **Fix:** added `[tool.poetry] package-mode = false` to `pyproject.toml`. This tells Poetry to skip installing the root project and act as a dependency-installer only. Our `pip install -e .` then runs after and installs the project properly via setuptools.
 - **Lesson:** Render's `runtime: python` is not a blank slate that runs your buildCommand. It runs a full opinionated buildpack with auto-detected dep tools that have their own assumptions about layout. The buildCommand is appended, not authoritative. If those assumptions don't match your repo, expect to add tool-specific escape hatches (`package-mode = false`, `--no-root`, etc.) or switch to `runtime: docker` and own the whole pipeline.
 
+### fix: third Render failure — service started with placeholder gunicorn command
+- **Symptom:** `==> Running 'gunicorn your_application.wsgi' / bash: line 1: gunicorn: command not found / Exited with status 127`.
+- **Root cause:** despite the Blueprint flow being used (per Andy), the `startCommand` and `buildCommand` from `render.yaml` did not propagate to the service. The dashboard ended up with Render's default Python placeholder (`gunicorn your_application.wsgi`) instead of our `uvicorn app.main:app …`. Exact mechanism unconfirmed — likely the Blueprint confirmation UI presented each field for review and the placeholder was accepted by reflex.
+- **Fix:** patched both fields manually in the Render dashboard:
+  - **`traceflow-api`** — Build: `pip install -e .` / Start: `uvicorn app.main:app --host 0.0.0.0 --port $PORT` / Health: `/health`
+  - **`adapter-health-check`** — Build: `pip install -e .` / Start: `python -m app.jobs.adapter_health`
+- **Service went live after the patch.** Build succeeded, startup completed. `asyncpg.create_pool()` is lazy so the placeholder `PENDING` Supabase DSN didn't crash startup — any DB-touching endpoint will 500 until real keys land.
+
+### decision: keep the current Render services (do not redo via Blueprint cleanly)
+- **What's drifted from render.yaml:** `buildCommand` and `startCommand` on both services are dashboard-set, not YAML-set. Everything else (plan, region, cron schedule, env var group structure, healthCheckPath) matches.
+- **Why not redo:** Render Blueprints are not live-sync — even a clean Blueprint provisioning doesn't keep the dashboard in lockstep with future YAML edits. The mental model "render.yaml is the source of truth" is aspirational on Render. Redoing now would cost ~15 min of clicks, lose the current deploy history, and could re-trigger whatever Blueprint quirk caused the issue in the first place. Trade-off is currently asymmetric — small drift now vs guaranteed cost to redo.
+- **What to remember:**
+  - If you change `buildCommand` or `startCommand` in render.yaml, **also change them in the dashboard** or the YAML change is silent
+  - If drift grows to more than ~3 fields, redoing the Blueprint becomes worth it
+  - Env var group `traceflow-secrets` is YAML-managed (currently all `PENDING` placeholders pending Supabase capture)
+
 ### What's next session
 - Andy reports back: Render service URLs + screenshot of provisioned services
 - Andy completes Supabase 2FA + paste DB URL (so migrations can run)
