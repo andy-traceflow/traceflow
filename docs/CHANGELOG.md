@@ -6,6 +6,81 @@
 
 ---
 
+## 2026-05-14 — Production accounts provisioned (in progress)
+
+### build: GitHub account + private repo live
+- **Account:** `andy-traceflow` on github.com, email `andy@traceflow.app`, 2FA enabled (authenticator app), recovery codes saved in 1Password
+- **Repo:** [github.com/andy-traceflow/traceflow](https://github.com/andy-traceflow/traceflow) (private)
+- **Initial commit:** `4929213` — 86 files (platform skeleton + docs + CI)
+- **Local git config:** per-repo `user.name=Andy`, `user.email=andy@traceflow.app`. Global identity (`hiandysuarez`) untouched so personal projects keep their author.
+- **CI:** first run triggered automatically on push. **Result NOT confirmed yet** — verify next session at github.com/andy-traceflow/traceflow/actions.
+- **Status:** ✅ done.
+
+### build: Supabase account + project provisioned
+- **Project:** `traceflow` at `https://ienjxmyhttuzxoaeramo.supabase.co` (project ref: `ienjxmyhttuzxoaeramo`)
+- **Region:** West US
+- **pgvector:** extension enabled (required by migration 005 for KB embeddings)
+- **Pricing:** Free tier for now. **Must upgrade to Pro ($25/mo) before client #1** — Free tier sleeps after 1 week of inactivity which kills production reliability.
+- **Status:** project provisioned. **Pending next session:**
+  - Enable 2FA on the Supabase account (user needs to install an authenticator app first)
+  - Paste DB URL with password so migrations can be applied
+  - Capture service role key + anon key for Render env vars
+
+### learning: Claude Desktop sandbox redirects %APPDATA% on Windows
+- **What:** While debugging "why does my gh CLI session see a different account than Andy's terminal," discovered Claude Desktop runs in a Windows UWP/MSIX sandbox that redirects `%APPDATA%` to `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\`. The two environments physically read different `hosts.yml` files.
+- **Implication:** Any tool that stores credentials in `%APPDATA%` (gh CLI, possibly others) cannot share state between Claude Desktop's tool sessions and the user's PowerShell. Auth-requiring commands (`gh repo create`, `git push`, anything needing a personal token) must be run from the user's terminal directly.
+- **Workaround pattern:** I do all local-only operations (file writes, `git init`, `git commit`, schema design). User runs the auth-requiring commands. We coordinate via copy-pasted outputs.
+- **What to consider for future:** SSH-key-based git auth where the sandbox owns its own key pair would let me push directly. Personal Access Tokens passed via `GH_TOKEN` env var would also work. Both have tradeoffs. Decision deferred until friction warrants it.
+
+### What's next session
+1. Confirm GitHub CI passed (or fix it)
+2. Enable Supabase 2FA
+3. Apply the 9 migrations via asyncpg from my side (need DB URL)
+4. Capture Supabase API keys
+5. Render account + service + cron + env vars
+6. End-to-end /health smoke test
+
+---
+
+## 2026-05-20 — Render blueprint readied, account handoff queued
+
+### build: render.yaml hardened for blueprint provisioning
+- **What:** Patched `render.yaml` so it deploys cleanly as a Render Blueprint without ad-hoc dashboard tweaks. Cron `adapter-health-check` was missing `ENVIRONMENT=production` (would have fallen back to `development` per `config.py`'s default). Added explicit `PYTHON_VERSION=3.12` to both services to match the Dockerfile and immunize against future Render default drift.
+- **Structure unchanged:** 1 web service (`traceflow-api`, Oregon, Starter) + 1 cron (`adapter-health-check`, hourly) + 1 env var group (`traceflow-secrets`, all `sync: false` so values are dashboard-entered).
+- **No Postgres on Render** — Supabase is the database. Render only hosts FastAPI + the health-check cron.
+
+### decision: TraceFlow gets its own Render account on andy@traceflow.app
+- **Why:** Matches the GitHub + Supabase identity separation pattern. Keeps TraceFlow billing/identity isolated from personal projects (`hsuarez.m4kr@gmail.com` workspace currently holds suspended Midas + Flux services).
+- **Implication:** Render MCP from this session is tied to the personal workspace and **cannot** provision into the new account. Same handoff pattern as GitHub last session — Andy clicks through account creation + Blueprint, I prep the YAML.
+
+### decision: Skip real env var values during Blueprint creation
+- **Why:** Supabase API keys + DB URL still pending (waiting on Andy's 2FA setup → service key capture). Creating the Render Blueprint now with placeholder values lets us establish the service structure without blocking on Supabase work.
+- **Trade-off:** First deploy will fail at startup (asyncpg can't connect with placeholder DSN) and the service will sit red until real values land. Build phase still succeeds (just `pip install -e .`), so this only blocks runtime, not provisioning.
+
+### Browser handoff to Andy (in order)
+1. Sign up at render.com using `andy@traceflow.app`, verify email
+2. Enable TOTP 2FA, save recovery codes to 1Password
+3. Account Settings → Connect GitHub → authorize Render app on **`andy-traceflow` GitHub account only**, scope to `traceflow` repo (not "all repos")
+4. New → Blueprint → select `andy-traceflow/traceflow` @ `main` → Render auto-reads `render.yaml`
+5. When prompted for env var group values, paste any non-empty placeholder (e.g. `PENDING`) into every field — values get replaced next session
+6. Do NOT add custom domain yet — use `traceflow-api.onrender.com` for smoke tests until DNS work
+
+### fix: first Render build failed on non-existent `types-jsonpath-ng` stub
+- **Symptom:** `Because traceflow depends on types-jsonpath-ng (*) which doesn't match any versions, version solving failed.`
+- **Root cause:** `types-jsonpath-ng` was added to `[project.optional-dependencies] dev` on speculation that mypy stubs existed for `jsonpath-ng`. They don't — PyPI returns 404 for the package. It was never published.
+- **Surprise:** the failing dep was in the *optional* `dev` group, yet `buildCommand: pip install -e .` (main deps only) still failed. Render's modern Python buildpack uses `uv` under the hood, and `uv` resolves *all* groups during its lock pass to validate the dependency graph — even groups that aren't installed.
+- **Fix:** removed `types-jsonpath-ng` from `pyproject.toml`. Added `[[tool.mypy.overrides]] module = "jsonpath_ng.*"` so mypy treats the runtime library as untyped without warnings.
+- **Lesson:** keep optional dependency groups clean enough to *resolve*, not just clean enough to *install*. The two are not the same on uv-backed builders.
+
+### What's next session
+- Andy reports back: Render service URLs + screenshot of provisioned services
+- Andy completes Supabase 2FA + paste DB URL (so migrations can run)
+- I apply the 9 migrations via asyncpg
+- Capture Supabase service role + anon keys → paste into Render env var group
+- Trigger redeploy → `GET /health` smoke test from `traceflow-api.onrender.com`
+
+---
+
 ## 2026-05-14 — Platform skeleton extracted + CI wired
 
 ### build: Multi-tenant platform code extracted from SEMCO source repos

@@ -10,6 +10,8 @@ services:
     envVars:
       - key: ENVIRONMENT
         value: production
+      - key: PYTHON_VERSION
+        value: "3.12"
       - fromGroup: traceflow-secrets
 
   - type: cron
@@ -19,6 +21,10 @@ services:
     buildCommand: pip install -e .
     startCommand: python -m app.jobs.adapter_health
     envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: PYTHON_VERSION
+        value: "3.12"
       - fromGroup: traceflow-secrets
 
 envVarGroups:

@@ -31,7 +31,6 @@ dev = [
     "pytest-mock>=3.14.0",
     "ruff>=0.7.0",
     "mypy>=1.13.0",
-    "types-jsonpath-ng",
 ]
 
 [build-system]
@@ -58,3 +57,7 @@ ignore = ["E501"]
 python_version = "3.11"
 strict = true
 warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = "jsonpath_ng.*"
+ignore_missing_imports = true
