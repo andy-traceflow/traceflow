@@ -87,6 +87,17 @@
   - **`adapter-health-check`** — Build: `pip install -e .` / Start: `python -m app.jobs.adapter_health`
 - **Service went live after the patch.** Build succeeded, startup completed. `asyncpg.create_pool()` is lazy so the placeholder `PENDING` Supabase DSN didn't crash startup — any DB-touching endpoint will 500 until real keys land.
 
+### build: all 9 schema migrations applied to Supabase
+- **What:** Wrote `scripts/apply_migrations.py` (durable, idempotent migration runner using asyncpg + a `schema_migrations` tracking table). Applied all 9 SQL files to the TraceFlow Supabase project (`ienjxmyhttuzxoaeramo`).
+- **Verification:** 16 tables in `public` schema (15 from migrations + `schema_migrations`), all with RLS enabled. 14 have tenant-isolation policies; `audit_log` and `schema_migrations` intentionally have 0 policies (service-role-only access by design). Extensions live: `vector 0.8.0`, `pgcrypto 1.3`, `uuid-ossp 1.1`.
+- **Why a runner script:** every future schema change needs the same flow. `python scripts/apply_migrations.py` with `SUPABASE_DB_URL` set is now the one-line repeatable interface.
+- **Migration path used:** direct connection (`db.<ref>.supabase.co:5432`). Works from local because Andy's network has IPv6 reachability — Supabase Free's direct port is IPv6-only. **Render may not have IPv6** from its outbound network; if the FastAPI service fails to connect after redeploy, swap `SUPABASE_DB_URL` in Render to the pooler session-mode URL (`postgres.<ref>:PASSWORD@aws-0-<region>.pooler.supabase.com:5432/postgres`).
+
+### security: rotation queue (for after Render integration is verified working)
+- DB password `Hiandysuarez123!` — both weak and exposed in chat. Rotate via Supabase → Project Settings → Database → Reset password. Generate strong random.
+- `service_role` JWT and `anon` JWT — both pasted in chat. Rotate via Project Settings → API → Reset (this rotates both keys simultaneously).
+- All three rotations require Render env var updates → redeploy. Do as a single pass once `/health` + a DB-touching endpoint smoke-test cleanly.
+
 ### decision: keep the current Render services (do not redo via Blueprint cleanly)
 - **What's drifted from render.yaml:** `buildCommand` and `startCommand` on both services are dashboard-set, not YAML-set. Everything else (plan, region, cron schedule, env var group structure, healthCheckPath) matches.
 - **Why not redo:** Render Blueprints are not live-sync — even a clean Blueprint provisioning doesn't keep the dashboard in lockstep with future YAML edits. The mental model "render.yaml is the source of truth" is aspirational on Render. Redoing now would cost ~15 min of clicks, lose the current deploy history, and could re-trigger whatever Blueprint quirk caused the issue in the first place. Trade-off is currently asymmetric — small drift now vs guaranteed cost to redo.
