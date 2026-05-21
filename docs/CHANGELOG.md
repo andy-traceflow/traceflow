@@ -98,6 +98,22 @@
 - `service_role` JWT and `anon` JWT — both pasted in chat. Rotate via Project Settings → API → Reset (this rotates both keys simultaneously).
 - All three rotations require Render env var updates → redeploy. Do as a single pass once `/health` + a DB-touching endpoint smoke-test cleanly.
 
+### milestone: Render ↔ Supabase integration working end-to-end
+- **What:** Service at `https://traceflow-api-8f3o.onrender.com` boots with `environment: production`, asyncpg pool initialized through the Supabase pooler. Latest commit `b8b57e6` deployed.
+- **DSN that finally worked (pooler, session mode):** `postgresql://postgres.ienjxmyhttuzxoaeramo:<PWD>@aws-1-us-west-1.pooler.supabase.com:5432/postgres`
+- **Three failure modes hit along the way (chronological):**
+  1. Direct DSN with `[bracketed password]` — `urllib.parse` rejected the brackets as malformed IPv6 host literals (`ValueError: 'db.ienjxmyhttuzxoaeramo.supabase.co' does not appear to be an IPv4 or IPv6 address`). Lesson: brackets in Supabase UI's `[YOUR-PASSWORD]` are placeholder delimiters, NOT part of the URL syntax.
+  2. Direct DSN with brackets removed — would've failed with IPv4/IPv6 mismatch (Supabase Free direct connection is IPv6-only, Render outbound is IPv4-only) but we skipped this hop by switching straight to pooler.
+  3. Pooler DSN with guessed host (`aws-0-us-west-1.pooler.supabase.com`) — `asyncpg.exceptions.InternalServerError: Tenant or user not found`. The pooler subdomain prefix is project-specific (`aws-0-` vs `aws-1-`) and must be copied verbatim from Supabase's "Connect" modal, not guessed.
+- **Correct host for this project:** `aws-1-us-west-1.pooler.supabase.com` (West US, cluster 1).
+- **Where the connection string lives in the new Supabase UI:** the "Connect" button at the top of the dashboard (not under Project Settings → Database, which has been reorganized). Session mode pooler (port 5432) is the right choice for asyncpg because connection state must persist across queries — transaction mode pooler (port 6543) would silently break the `app.current_client_id` RLS plumbing.
+- **Env var drift carried over from earlier Blueprint hiccup:** `ENVIRONMENT`, `BASE_URL`, `ALLOWED_ORIGINS`, and `ADMIN_JWT_SECRET` were all missing from the service when the Blueprint partially failed. All set manually in the dashboard now; documented under the existing drift decision above.
+
+### milestone: Twilio account provisioned
+- **Account:** created on `andy@traceflow.app`. 2FA + recovery codes pending Andy confirmation.
+- **Phone number:** NOT purchased — per the LLR model, numbers are per-client and purchased at client onboarding, not platform-level.
+- **Env vars:** `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` stay as `PENDING` in Render until first client is signed and the LLR pipeline goes live. Twilio webhook handler doesn't init the SDK at startup; creds are only needed at signature-verify time.
+
 ### decision: keep the current Render services (do not redo via Blueprint cleanly)
 - **What's drifted from render.yaml:** `buildCommand` and `startCommand` on both services are dashboard-set, not YAML-set. Everything else (plan, region, cron schedule, env var group structure, healthCheckPath) matches.
 - **Why not redo:** Render Blueprints are not live-sync — even a clean Blueprint provisioning doesn't keep the dashboard in lockstep with future YAML edits. The mental model "render.yaml is the source of truth" is aspirational on Render. Redoing now would cost ~15 min of clicks, lose the current deploy history, and could re-trigger whatever Blueprint quirk caused the issue in the first place. Trade-off is currently asymmetric — small drift now vs guaranteed cost to redo.
