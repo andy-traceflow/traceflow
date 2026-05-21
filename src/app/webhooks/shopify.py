@@ -80,7 +80,7 @@ async def _process_order(client_id: UUID, order: dict[str, Any]) -> None:
                 client_id, external_id, source_system,
                 contact_name, contact_company, phone, email, address,
                 raw_payload
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING id
             """,
             lead_create.client_id,
@@ -91,18 +91,18 @@ async def _process_order(client_id: UUID, order: dict[str, Any]) -> None:
             lead_create.phone,
             lead_create.email,
             lead_create.address,
-            json.dumps(order),
+            order,
         )
         lead_id = row["id"] if row else None
 
         await conn.execute(
             """
             INSERT INTO events (client_id, lead_id, event_type, payload)
-            VALUES ($1, $2, 'shopify_order_received', $3::jsonb)
+            VALUES ($1, $2, 'shopify_order_received', $3)
             """,
             client_id,
             lead_id,
-            json.dumps({"order_id": order.get("id"), "name": order.get("name")}),
+            {"order_id": order.get("id"), "name": order.get("name")},
         )
 
     logger.info(

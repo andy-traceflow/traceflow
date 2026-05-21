@@ -89,7 +89,7 @@ async def generic_webhook(
                 contact_name, contact_company, phone, email, address,
                 service_type, sqft, budget_range, timeframe,
                 raw_payload
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             RETURNING id
             """,
             client_id,
@@ -104,18 +104,18 @@ async def generic_webhook(
             lead.sqft,
             lead.budget_range,
             lead.timeframe,
-            json.dumps(payload),
+            payload,
         )
         lead_id = row["id"] if row else None
 
         await conn.execute(
             """
             INSERT INTO events (client_id, lead_id, event_type, payload)
-            VALUES ($1, $2, 'generic_webhook_received', $3::jsonb)
+            VALUES ($1, $2, 'generic_webhook_received', $3)
             """,
             client_id,
             lead_id,
-            json.dumps({"slug": slug}),
+            {"slug": slug},
         )
 
     logger.info(

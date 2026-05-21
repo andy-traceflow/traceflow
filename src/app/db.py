@@ -12,6 +12,7 @@ explicitly scope a block of work to one tenant.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -28,6 +29,22 @@ _pool: asyncpg.Pool | None = None
 _current_tenant: ContextVar[UUID | None] = ContextVar("_current_tenant", default=None)
 
 
+async def _register_codecs(conn: asyncpg.Connection) -> None:
+    """Register JSON/JSONB codecs so reads return dicts/lists and writes
+    accept dicts/lists directly. Without this, asyncpg passes JSONB through
+    as raw JSON text and callers have to manually `json.loads`/`json.dumps`
+    on both ends — easy to forget on the read side (causing
+    `AttributeError: 'str' object has no attribute 'items'` deep in handler
+    code that assumes a parsed dict)."""
+    for typename in ("jsonb", "json"):
+        await conn.set_type_codec(
+            typename,
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema="pg_catalog",
+        )
+
+
 async def init_pool() -> None:
     """Create the global connection pool. Called once at app startup."""
     global _pool
@@ -40,6 +57,7 @@ async def init_pool() -> None:
         min_size=2,
         max_size=10,
         command_timeout=30,
+        init=_register_codecs,
     )
     logger.info("Database pool initialized")
 

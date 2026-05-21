@@ -137,6 +137,13 @@
   - Added direct cross-tenant isolation tests for `messages` and `events` — both are high-traffic, customer-content-carrying tables where a leak would be especially damaging
 - **Status of the checklist item ("Tenant isolation test suite"):** ✅ closed. Full suite: 108/108 passing locally against live Supabase. CI should now go green on this push.
 
+### build: generic webhook handler (Layer 3) checklist item complete + JSONB codec fix
+- **What:** new `tests/test_generic_webhook.py` covers the full Layer 3 path end-to-end via FastAPI's TestClient (16 tests). 7 are pure-function tests on the JSONPath extractor; 9 are integration tests that POST to `/webhooks/generic/{client_id}/{slug}` with various sig states and assert on the resulting `leads` + `events` rows.
+- **Integration scenarios covered:** 404 for unknown slug, 401 for bad HMAC, 200 + Lead persisted for valid HMAC hex *and* base64 *and* timestamped (Stripe-style), 401 on stale timestamp (replay protection), 200 + no Lead on invalid JSON (ack to prevent retry storm), 200 with `signing_algorithm='none'`, and **tenant isolation** (Client B's URL with Client A's slug and a valid signature for A's secret resolves to 404, not a leak).
+- **Real bug surfaced + fixed:** the handler treated `field_extractors` as a dict but asyncpg returns JSONB columns as raw JSON strings by default → `AttributeError: 'str' object has no attribute 'items'` on every signed request. Latent since the platform skeleton landed. Fixed by registering JSON/JSONB type codecs at pool init (`init=_register_codecs`) so JSONB reads come back as dicts and writes accept dicts directly. Also removed the now-redundant `json.dumps(...)` wrappers from 5 callsites (`generic.py` × 2, `shopify.py` × 2, `adapter_health.py` × 1) that would have double-encoded under the new codec.
+- **Test infrastructure changes:** `tests/conftest.py` now mirrors `TRACEFLOW_TEST_DB_URL` into `SUPABASE_DB_URL` at collection time so FastAPI's lifespan can initialize the connection pool against the test DB. Previously there was no way to bring up the full app stack from inside the test suite.
+- **Status of the checklist item ("Generic webhook handler (Layer 3) built and tested"):** ✅ closed. Full suite: 124/124 green.
+
 ### milestone: Twilio account provisioned
 - **Account:** created on `andy@traceflow.app`. 2FA + recovery codes pending Andy confirmation.
 - **Phone number:** NOT purchased — per the LLR model, numbers are per-client and purchased at client onboarding, not platform-level.

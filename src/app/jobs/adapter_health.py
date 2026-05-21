@@ -11,7 +11,6 @@ Run via:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from uuid import UUID
 
@@ -73,10 +72,10 @@ async def _check_one(client_id: UUID, provider: str) -> None:
         await conn.execute(
             """
             INSERT INTO events (client_id, event_type, payload)
-            VALUES ($1, 'adapter_health_check', $2::jsonb)
+            VALUES ($1, 'adapter_health_check', $2)
             """,
             client_id,
-            json.dumps({"provider": provider, "healthy": ok}),
+            {"provider": provider, "healthy": ok},
         )
 
         if not ok:
