@@ -68,9 +68,16 @@
 ### fix: first Render build failed on non-existent `types-jsonpath-ng` stub
 - **Symptom:** `Because traceflow depends on types-jsonpath-ng (*) which doesn't match any versions, version solving failed.`
 - **Root cause:** `types-jsonpath-ng` was added to `[project.optional-dependencies] dev` on speculation that mypy stubs existed for `jsonpath-ng`. They don't — PyPI returns 404 for the package. It was never published.
-- **Surprise:** the failing dep was in the *optional* `dev` group, yet `buildCommand: pip install -e .` (main deps only) still failed. Render's modern Python buildpack uses `uv` under the hood, and `uv` resolves *all* groups during its lock pass to validate the dependency graph — even groups that aren't installed.
+- **Surprise:** the failing dep was in the *optional* `dev` group, yet `buildCommand: pip install -e .` (main deps only) still failed. Render's Python buildpack resolves *all* groups during its lock pass to validate the dependency graph — even groups that aren't installed. (The resolver error message style initially looked like uv, but the second build failure proved it's actually Poetry; see below.)
 - **Fix:** removed `types-jsonpath-ng` from `pyproject.toml`. Added `[[tool.mypy.overrides]] module = "jsonpath_ng.*"` so mypy treats the runtime library as untyped without warnings.
-- **Lesson:** keep optional dependency groups clean enough to *resolve*, not just clean enough to *install*. The two are not the same on uv-backed builders.
+- **Lesson:** keep optional dependency groups clean enough to *resolve*, not just clean enough to *install*. The two are not the same on Render's Python buildpack.
+
+### fix: second Render build failed because Poetry tries to install the root project
+- **Symptom:** `Installing the current project: traceflow (0.1.0) — Error: The current project could not be installed: No file/folder found for package traceflow`.
+- **Root cause:** Render's Python buildpack runs `poetry install` as a pre-step regardless of `[build-system] build-backend = "setuptools.build_meta"`. Poetry's default behavior is to install the project package itself, looking for a `traceflow/` directory matching the project name. Our layout is `src/app/`, so Poetry can't find it.
+- **Surprise:** the explicit `buildCommand: pip install -e .` in render.yaml is *not* the build process — it runs *after* Render's auto-detected dependency tool (Poetry, in our case) finishes. If Poetry's step fails, our buildCommand never runs.
+- **Fix:** added `[tool.poetry] package-mode = false` to `pyproject.toml`. This tells Poetry to skip installing the root project and act as a dependency-installer only. Our `pip install -e .` then runs after and installs the project properly via setuptools.
+- **Lesson:** Render's `runtime: python` is not a blank slate that runs your buildCommand. It runs a full opinionated buildpack with auto-detected dep tools that have their own assumptions about layout. The buildCommand is appended, not authoritative. If those assumptions don't match your repo, expect to add tool-specific escape hatches (`package-mode = false`, `--no-root`, etc.) or switch to `runtime: docker` and own the whole pipeline.
 
 ### What's next session
 - Andy reports back: Render service URLs + screenshot of provisioned services

@@ -37,6 +37,15 @@ dev = [
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
+# Render's Python buildpack runs `poetry install` as a pre-step regardless of
+# the declared build-backend. Without this flag Poetry tries to install the
+# root project itself and fails because our package layout is `src/app/`, not
+# `traceflow/`. Setting package-mode=false makes Poetry act as a dependency
+# installer only; the project is then installed by render.yaml's
+# `buildCommand: pip install -e .` via setuptools.
+[tool.poetry]
+package-mode = false
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
