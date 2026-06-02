@@ -26,6 +26,22 @@ class QualificationStatus(StrEnum):
     needs_review = "needs_review"
     spam = "spam"
     duplicate = "duplicate"
+    # Terminal post-reply intent outcomes (see prompts/intent.py).
+    support_touch = "support_touch"
+    non_lead_contact = "non_lead_contact"
+
+
+class Classification(StrEnum):
+    """What the caller IS — set pre-send, refined post-reply.
+
+    Orthogonal to qualification_status (how far the lead got). Only
+    `potential_lead` rows count toward the missed-call recovery rate.
+    """
+
+    potential_lead = "potential_lead"
+    existing_customer = "existing_customer"
+    known_non_lead = "known_non_lead"
+    spam = "spam"
 
 
 class Lead(BaseModel):
@@ -47,6 +63,7 @@ class Lead(BaseModel):
 
     qualification_status: QualificationStatus = QualificationStatus.unqualified
     qualification_score: int | None = None
+    classification: Classification = Classification.potential_lead
 
     notes: str = ""
     raw_payload: dict[str, Any]
@@ -76,6 +93,7 @@ class LeadCreate(BaseModel):
     timeframe: str | None = None
     qualification_status: QualificationStatus = QualificationStatus.unqualified
     qualification_score: int | None = None
+    classification: Classification = Classification.potential_lead
     notes: str = ""
     raw_payload: dict[str, Any] = Field(default_factory=dict)
 
@@ -94,5 +112,6 @@ class LeadUpdate(BaseModel):
     timeframe: str | None = None
     qualification_status: QualificationStatus | None = None
     qualification_score: int | None = None
+    classification: Classification | None = None
     notes: str | None = None
     external_id: str | None = None

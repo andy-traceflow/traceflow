@@ -12,7 +12,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from app.db import get_connection
+from app.db import get_service_connection
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,9 @@ async def record_audit_event(
 ) -> None:
     """Insert an audit_log row. Best-effort — failures are logged but never raise."""
     try:
-        async with get_connection() as conn:
+        # audit_log has no tenant policy by design — writes need the
+        # service role (BYPASSRLS), not the request's authenticated role.
+        async with get_service_connection() as conn:
             await conn.execute(
                 """
                 INSERT INTO audit_log

@@ -19,7 +19,7 @@ from jwt.algorithms import get_default_algorithms
 from app.config import get_settings
 from app.db import close_pool, init_pool
 from app.middleware.tenant_resolver import tenant_resolver_middleware
-from app.routers import calculator, kb, kb_export
+from app.routers import admin, calculator, kb, kb_export
 from app.webhooks import crm, generic, shopify, twilio
 
 logger = logging.getLogger(__name__)
@@ -72,6 +72,9 @@ app.include_router(generic.router)
 app.include_router(kb.router)
 app.include_router(kb_export.router)
 app.include_router(calculator.router)
+
+# Founder-only admin — cross-tenant, bypasses RLS, separate auth scope
+app.include_router(admin.router)
 
 
 @app.get("/")

@@ -27,6 +27,19 @@ services:
         value: "3.12"
       - fromGroup: traceflow-secrets
 
+  - type: cron
+    name: daily-digest
+    runtime: python
+    schedule: "0 * * * *"  # hourly; each client is gated to its own 06:00 local time
+    buildCommand: pip install -e .
+    startCommand: python -m app.jobs.daily_digest
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: PYTHON_VERSION
+        value: "3.12"
+      - fromGroup: traceflow-secrets
+
 envVarGroups:
   - name: traceflow-secrets
     envVars:

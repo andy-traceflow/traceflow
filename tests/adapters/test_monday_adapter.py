@@ -9,13 +9,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
 
 from app.adapters.monday import MondayAdapter
 from app.models.client_config import ClientConfig
+from app.models.crm_contact import ContactType
 from app.models.lead import Lead, QualificationStatus
 from app.services.field_mappings import FieldMapping
 
@@ -92,11 +93,9 @@ def test_item_name_falls_back_to_lead_id_prefix():
 def test_build_parent_columns_with_value_map_transform():
     adapter = MondayAdapter()
     lead = _make_lead(service_type="consult", sqft=200.0)
-    config = _make_config(lead.client_id)
-    board_id = str(config.crm_credentials["board_id"])
 
-    # Prime the cache with parent columns for two fields
-    adapter._column_cache[board_id] = {
+    # Discovered columns for two fields — the shape _discover_columns returns
+    discovered = {
         "parent": {"service_type": "status_col_id", "sqft": "num_col_id"},
         "subitem": {},
         "subitem_board_id": None,
@@ -117,9 +116,9 @@ def test_build_parent_columns_with_value_map_transform():
         ),
     }
 
-    columns = adapter._build_parent_columns(lead, mappings, board_id)
-    assert columns["status_col_id"] == "Consultation"   # transformed
-    assert columns["num_col_id"] == "200.0"             # str-serialized
+    column_values = adapter._build_parent_columns(lead, mappings, discovered)
+    assert column_values["status_col_id"] == "Consultation"   # transformed
+    assert column_values["num_col_id"] == "200.0"             # str-serialized
 
 
 def test_canonical_dict_includes_all_known_fields():
@@ -182,7 +181,68 @@ async def test_push_lead_returns_external_id():
 
     adapter._request = fake_request  # type: ignore[assignment]
     # No field mappings configured → no parent columns to set
-    from unittest.mock import patch
     with patch("app.adapters.monday.resolve_mappings", new=AsyncMock(return_value={})):
         external_id = await adapter.push_lead(lead, config)
     assert external_id == "monday-item-123"
+
+
+# ---------------------------------------------------------------------------
+# lookup_by_phone — pre-send CRM classification (best-effort)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_lookup_by_phone_none_without_phone_mapping():
+    """Monday can't match by phone unless the client mapped a phone column."""
+    adapter = MondayAdapter()
+    with patch("app.adapters.monday.resolve_mappings", new=AsyncMock(return_value={})):
+        result = await adapter.lookup_by_phone("+15551234567", _make_config(uuid4()))
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_lookup_by_phone_returns_unknown_on_match():
+    """A board hit is reported as contact_type=unknown — the board carries no
+    reliable customer-vs-vendor signal, so disposition defers to Slice 2."""
+    adapter = MondayAdapter()
+
+    async def fake_request(api_key, query, variables):
+        if "boards(ids" in query:  # column discovery
+            return {
+                "data": {
+                    "boards": [
+                        {"columns": [{"id": "phone_col", "title": "Phone", "type": "phone", "settings_str": "{}"}]}
+                    ]
+                }
+            }
+        if "items_page_by_column_values" in query:
+            return {"data": {"items_page_by_column_values": {"items": [{"id": "item-1", "name": "Repeat Client"}]}}}
+        return {"data": {}}
+
+    adapter._request = fake_request  # type: ignore[assignment]
+    phone_mapping = {
+        "phone": FieldMapping(
+            canonical_field="phone",
+            external_field="Phone",
+            external_field_type="column",
+            transform=None,
+        )
+    }
+    with patch("app.adapters.monday.resolve_mappings", new=AsyncMock(return_value=phone_mapping)):
+        contact = await adapter.lookup_by_phone("+15551234567", _make_config(uuid4()))
+
+    assert contact is not None
+    assert contact.external_id == "item-1"
+    assert contact.name == "Repeat Client"
+    assert contact.contact_type == ContactType.unknown
+
+
+@pytest.mark.asyncio
+async def test_lookup_by_phone_none_on_error():
+    """Any failure degrades to None so a real lead is never dropped."""
+    adapter = MondayAdapter()
+    with patch(
+        "app.adapters.monday.resolve_mappings",
+        new=AsyncMock(side_effect=Exception("monday down")),
+    ):
+        result = await adapter.lookup_by_phone("+15551234567", _make_config(uuid4()))
+    assert result is None

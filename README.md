@@ -21,7 +21,7 @@ traceflow/
 ├── CLAUDE.md                # Master context for Claude Code
 ├── README.md                # This file
 ├── pyproject.toml           # Python project + deps
-├── render.yaml              # Render service config (web + adapter health cron)
+├── render.yaml              # Render service config (web + adapter-health + daily-digest crons)
 ├── Dockerfile               # python:3.12-slim + uvicorn
 ├── docker-compose.yml       # Local dev
 ├── .env.example             # Platform-level secrets template
@@ -61,7 +61,7 @@ traceflow/
 │       ├── services/        # dedupe, notifications, webhook_signature, field_mappings,
 │       │                    # permissions, audit, calculator
 │       ├── routers/         # kb, kb_export, calculator
-│       └── jobs/            # adapter_health (hourly cron)
+│       └── jobs/            # adapter_health (hourly), daily_digest (nightly recovery digest)
 ├── tests/                   # 124 tests — pure unit + live-DB integration
 │   ├── conftest.py          # mirrors TRACEFLOW_TEST_DB_URL → SUPABASE_DB_URL for app boot
 │   ├── test_tenant_isolation.py   # Non-negotiable RLS suite (31 tests)

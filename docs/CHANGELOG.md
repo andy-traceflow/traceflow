@@ -6,6 +6,167 @@
 
 ---
 
+## 2026-06-01 — Caller-classification runtime tier (LLR stops treating every missed call as a lead)
+
+### milestone: the classification runtime tier is built end-to-end
+Missed calls are now classified before *and* after the greeting, routed by what the caller IS, and reported on — so spam, vendors, and existing customers no longer enter the sales pipeline as "leads." Built in four reviewable slices; full offline suite **269 passed / 40 skipped**, ruff clean. Everything ships behind the existing graceful-degradation invariant: no Anthropic key / no Twilio creds / no CRM / any lookup failure → the caller is treated as a recoverable `potential_lead` and is never dropped.
+
+### build: Slice 1 — pre-send classification + routing (`services/classification.py`)
+- `classify_caller` decision tree: active-conversation short-circuit → vendor allowlist → CRM lookup (existing_customer / known_non_lead / re-engagement) → unknown. Every failing or ambiguous path degrades to `potential_lead`. Config-driven (no per-client code branches): a client with no CRM and an empty allowlist behaves exactly like the pre-classification system.
+- New `leads.classification` column (migration 014), **orthogonal** to `qualification_status`: classification = what the caller IS (`potential_lead` / `existing_customer` / `known_non_lead` / `spam`); qualification_status = how far a genuine lead got. `classification_config` JSONB + `vendor_allowlist` + `existing_customer_alert_contact` (migration 013), mirrored on `ClientConfig`.
+- Per-adapter `lookup_by_phone(phone, config) -> CRMContact | None` (GHL + Monday); canonical `CRMContact` in `models/crm_contact.py`. Adapter and caller each enforce a ~2s timeout, so a slow CRM can never delay the missed-call SMS.
+
+### build: Slice 2 — post-reply intent classification, the safety net (`prompts/intent.py`)
+- The first inbound reply on an `unqualified` lead runs `classify_intent` (Haiku) before the qualifier. Routes: `sales` / intent unavailable → qualifier (`qualifying`); `existing_customer` → owner alert + `support_touch`; `non_lead` → `non_lead_contact` (silent, surfaces in the digest); `spam` → `spam`; `ambiguous` → one clarifying question, re-runs on the next reply.
+- Migration 015 adds the `support_touch` + `non_lead_contact` terminal statuses. Billing: +1 `ai_interaction` per real classification; the degraded/no-key path doesn't bill (no call was made).
+
+### build: Slice 3 — spam scoring (`services/spam.py`)
+- Twilio Lookup v2 `line_type_intelligence` → coarse `SpamRisk` (`nonFixedVoip` = high; toll-free/premium/etc. = moderate; everything else = low), scored **only** for unknown callers — a CRM-known caller is never scored as spam. Conservative default: `spam_risk_threshold="moderate"` carries a *high* floor (only `nonFixedVoip` dropped); `"strict"` opts into dropping moderate; `low` is never dropped. Any failure (no creds / timeout / HTTP error / non-JSON) → no signal → `potential_lead`. No migration (config + enums already existed).
+
+### build: Slice 4 — recovery metrics + nightly digest (`jobs/daily_digest.py`)
+- Per-tenant owner email digest. **Recovery rate = replied ÷ captured, computed over `classification='potential_lead'` ONLY** (spam/existing/vendor excluded from the denominator, per `workflow-schema.md` `digest_inclusion`). Sections: recovery-rate hero, captured/replied/qualified/pending, estimated pipeline ($ from budget-bucket midpoints), the genuine-lead table, and a "handled automatically" block that surfaces the silent dispositions (spam / `non_lead_contact` / `support_touch`) to the owner.
+- One hourly Render cron (`daily-digest`), self-gated to each client's **06:00 local** (zoneinfo + new `tzdata` dependency); idempotent via a `daily_digest_sent` event. Enumerates tenants via `get_service_connection()` — **not** `get_connection()`, whose forced-RLS + no-tenant context returns zero rows; per-client work stays RLS-scoped via `set_tenant_context`. Zero AI and zero Twilio spend (pure SQL + one email) → runs fully in Phase 0. See ADR-0002.
+
+### decision: recovery-rate definition (the spec left the formula open)
+"Recovered" = a genuine lead that left `unqualified` (the caller texted back) — matches the PRD's "recovery = SMS exchange initiated"; `qualified`/`high_value` is reported separately as conversion. The digest is skipped on zero-activity days so it stays signal, not noise.
+
+### learning: latent RLS bug in `jobs/adapter_health.py` (flagged, not fixed in this batch)
+While verifying the digest's tenant enumeration, found that `adapter_health._check_all_clients()` lists clients via `get_connection()` with no tenant set → under forced RLS (migrations 010/011) the `authenticated` role matches **zero rows** → the hourly CRM health check has been silently no-opping. Fix is to switch its enumeration to `get_service_connection()` (exactly what the digest does). Tracked as a separate task.
+
+### Status + live-readiness (operational, not code)
+- Landed on branch **`feat/caller-classification-runtime`** (not `main`) — main auto-deploys and these migrations aren't applied to Supabase yet. This commit also lands the previously-uncommitted Phase 0 AI pipeline + admin layer (greeting/qualifier/owner-alert/admin, migration 012) that was sitting in the working tree.
+- Before go-live: apply migrations **012–015** (`scripts/apply_migrations.py`); set `RESEND_API_KEY` (digest) and, when ready, `ANTHROPIC_API_KEY` (flips intent + qualifier from fallback to live) in Render; then merge to `main` to deploy.
+- Smoke-test the digest: `python -m app.jobs.daily_digest --force`.
+
+---
+
+## 2026-05-26 — Landing page live at traceflow.app
+
+### milestone: traceflow.app is serving production traffic with TLS
+First public surface of TraceFlow is live. `https://traceflow.app` resolves to a Render static site with a valid Let's Encrypt cert. Apex + `www` both work; `www` redirects to apex via Render's primary-domain setting. Content is the scaffolding — unstyled baseline only; full design pass is the next session.
+
+### build: landing page scaffolded as a sibling repo
+- **What:** New repo [`andy-traceflow/traceflow-landing`](https://github.com/andy-traceflow/traceflow-landing) (private). Six files: `index.html`, `styles.css`, `script.js`, `render.yaml`, `README.md`, `.gitignore`. Initial commit `29097bf`. Plain HTML/CSS/JS — no build step, no framework, no deps.
+- **Why a separate repo, not a subfolder of `traceflow`:** Backend and marketing surface are different deploy lifecycles, different runtimes, different blast radii. Putting marketing copy edits in the same repo as the multi-tenant pipeline would mix unrelated concerns and turn `git log` into noise. Cost of a second repo on GitHub Pro is zero.
+- **Why plain HTML over Astro/Next:** the page is 7 sections of mostly-static content with one CTA. A framework would add a build step, a `node_modules`, and a deploy-fail surface to gain nothing. Reconsider if the site grows past ~5 pages.
+- **Content sourced from `Traceflow/case-study.md`** + the LLR positioning in `docs/PRD.md`. Sections: hero, problem (revenue leaks), how LLR works (4 steps), case study (stats grid + narrative), pricing (Founding Partner only), CTA, footer. Calendly link is a placeholder `calendly.com/andy-traceflow/15min` — replace once Calendly is provisioned.
+- **`styles.css` is intentionally bare** — system font, 72ch container, neutral defaults, no design opinion. Style pass is a separate change.
+- **Status:** ✅ live at `https://traceflow.app`. Next: design pass.
+
+### build: Render static site provisioned + custom domain wired
+- **Service:** `traceflow-11sh` on the `andy@traceflow.app` Render workspace (separate from the personal workspace that hosts the backend). Static site, publish dir `./`, branch `main`, auto-deploy on push.
+- **Render URL:** `traceflow-11sh.onrender.com` — internal canonical, custom domain points here.
+- **DNS at Namecheap:**
+  - `A @ → 216.24.57.1` (Render's static-site load balancer IP)
+  - `CNAME www → traceflow-11sh.onrender.com`
+  - Default Namecheap parking records (CNAME on `www` to parkingpage.namecheap.com, URL Redirect on `@`) deleted. Existing Google Workspace MX/TXT records left untouched.
+- **TLS:** Let's Encrypt, auto-provisioned by Render ~10 min after DNS verification. Both apex and `www` covered.
+- **Primary domain:** apex (`traceflow.app`); `www` 301-redirects to it via Render's primary-domain setting.
+
+### learning: Render's UI shows the apex A record IP in small text, not as a primary option
+The "Add Custom Domain" wizard surfaces a CNAME target for *both* domains by default. The apex A record alternative (`216.24.57.1`) is rendered as one-line gray text below the CNAME row ("For `A` records, use this target value: …") — easy to miss. Namecheap doesn't support CNAME at the zone apex, so the A record is the only correct choice on Namecheap. **Implication:** when documenting Render+Namecheap setup for clients later (or for ourselves), screenshot the wizard and highlight the A-record line — it's the single most overlooked detail.
+
+### learning: first Render static site was pointed at the wrong repo
+- **Symptom:** `traceflow-11sh.onrender.com` returned "Not Found" for `/` even though the service was Live and the publish dir was `./`.
+- **Root cause:** the static site was connected to `andy-traceflow/traceflow` (the FastAPI backend repo) instead of a landing-specific repo. Render dutifully served the backend repo's root as static files — no `index.html` exists there, so every request hit Render's default 404.
+- **Fix:** create `andy-traceflow/traceflow-landing`, push the scaffolded files, change the service's connected repo in Render → Settings → Build & Deploy, trigger a manual deploy. Custom domain stayed attached to the service across the swap (domains bind to service IDs, not repos), so no DNS rework.
+- **Lesson:** Render's "connect a GitHub repo" step is exactly that — a pointer. There's no validation that the repo is appropriate for the service type. A static site can be pointed at a Python web service repo and silently fail with 404s. **Always verify the connected repo, branch, and root file list match the expected service shape before debugging deeper.**
+
+### learning: ISP DNS resolver returned NODATA, not NXDOMAIN, for the new records
+- **Symptom:** after Namecheap was updated and Render verified the domain, the browser still showed `DNS_PROBE_FINISHED_NXDOMAIN`. `nslookup traceflow.app 1.1.1.1` returned `216.24.57.1` correctly, but `nslookup traceflow.app` (default resolver) returned the unusual error `*** No internal type for both IPv4 and IPv6 Addresses (A+AAAA) records available for traceflow.app`.
+- **Diagnosis:** that error is Windows' `nslookup` wording for a DNS NODATA response — the resolver acknowledges the name exists in some form but claims no A/AAAA records exist for it. Likely cause: the ISP's resolver had cached a negative response from before the records were added, and was serving the cached "no records" answer past its TTL.
+- **Fix:** Chrome Secure DNS → set to Cloudflare (1.1.1.1). Bypasses the ISP resolver at the application layer. Permanent fix is to switch Windows system DNS to 1.1.1.1, but the Chrome-level toggle was enough to confirm the issue and unblock testing.
+- **Lesson:** when verifying a fresh custom domain, never trust your local resolver. The authoritative answer is whatever a clean resolver like `1.1.1.1` or `8.8.8.8` returns. Local + ISP caches can lag arbitrarily long, especially on newly-created records that previously returned NXDOMAIN.
+
+### decision: traceflow.app points at the landing static site, NOT the backend API
+- **What:** the apex domain serves the marketing site. The backend FastAPI service stays on its `*.onrender.com` URL for now.
+- **Why:** there is no client-facing UI in Phase 0/1 per the platform thesis. The only domain visitors should see is the landing page. The backend is a webhook receiver — Twilio/Shopify/CRM systems hit it directly via their configured URLs, no humans involved. No need to spend a subdomain on it yet.
+- **Future:** `api.traceflow.app` can be wired to the backend when (a) we want a stable URL for client webhook configs that survives if we ever migrate Render services, or (b) we ship any API surface a human touches. Neither is required before Client 1.
+
+### What's next session
+- Style pass on the landing page (design direction TBD — Andy to define)
+- Replace Calendly placeholder URL with real scheduling link once Calendly is provisioned
+- Add favicon + OG image
+- Consider Plausible or similar lightweight analytics
+
+---
+
+## 2026-05-21 — Phase 0 build: GoHighLevel adapter + LLR pipeline + admin monitoring layer
+
+### milestone: Phase 0 framework complete
+
+End-to-end, the system can now: receive a missed call (Twilio), send a greeting SMS (AI-generated or static fallback), run a multi-turn AI qualification conversation with structured field extraction, push the qualified lead to the client's CRM (Monday or GoHighLevel), and alert the owner if the lead matches a VIP keyword or budget-floor value trigger. Plus a founder-only admin backend so the pipeline can be monitored and corrected from a Retool UI.
+
+**Remaining live-readiness steps are operational, not code:**
+1. Apply migration 012 to Supabase (`is_test` on `leads`).
+2. Set `ADMIN_JWT_SECRET` in Render env vars.
+3. Build the Retool admin UI (~weekend of click-through against the panel spec + `docs/retool-notes.md`).
+4. Set `ANTHROPIC_API_KEY` in Render — flips every AI touchpoint from fallback to live.
+
+After those four, Client 1 onboarding can begin. Counting from 2026-05-13's Phase 0 kickoff: framework built in 8 days.
+
+### build: Monday adapter made stateless (column cache removed)
+- **What:** Removed `MondayAdapter._column_cache` — a per-board column-ID map held as mutable instance state on the shared registry singleton. `_ensure_columns_cached` became `_discover_columns`, which *returns* the resolved `{parent, subitem, subitem_board_id}` map; `push_lead`/`update_lead` thread it through explicitly.
+- **Why:** `registry.py` states adapters "hold no per-request state" — the cache violated that. Not a cross-tenant leak (Monday board IDs are globally unique), but a real staleness bug: a client editing their field mappings without rotating boards got stale column IDs until the process restarted. Also unbounded — no eviction.
+- **Trade-off:** discovery now runs on every push/update (1–2 extra GraphQL calls) — immaterial at Phase 0 volume. Also fixed a latent `KeyError` in `update_lead` on the board-not-found path.
+- **Tests:** `test_monday_adapter.py` 9/9 green.
+
+### build: GoHighLevel adapter implemented
+- **What:** `adapters/ghl.py` was a `NotImplementedError` stub; now real. `push_lead` creates a contact, `update_lead` patches one, `health_check` pings the location, `parse_webhook` minimally wraps the payload. httpx against the v2 LeadConnector API (`services.leadconnectorhq.com`) — no SDK, consistent with the Monday adapter. Stateless.
+- **Design:** credentials are a per-client `crm_credentials: {api_key, location_id}` — a GHL Private Integration Token scoped to one location (no OAuth; marketplace-app infra is deferred). Field mappings drive placement: `external_field_type='standard'` → top-level contact key, `'custom_field'` → a `customFields` array entry.
+- **Confirm at first GHL onboarding:** the `Version` header value (`2021-07-28`) and the custom-field value key (`field_value`) — GHL has varied both across API revisions and the docs SPA didn't expose the exact contact schema.
+- **Tests:** `test_ghl_adapter.py` — 10 tests, HTTP layer mocked.
+
+### build: Twilio missed-call webhook handler — the core LLR flow
+- **What:** `webhooks/twilio.py` missed-call route implemented. Missed-call webhook → dedupe on `CallSid` → immediate 200 → background task: create a `twilio_missed_call` Lead, send the client's greeting SMS to the caller, record the `Message` + events. Greeting uses `ClientConfig.greeting_template` (`{business_name}` substituted) or a default.
+- **New `services/sms.py`:** `send_sms` via the Twilio REST API (httpx; mirrors `notifications.send_email` — no-ops without creds, never raises into the pipeline). Platform Twilio account, per-client `From` number.
+- **New `services/twilio_signature.py`:** X-Twilio-Signature verification (HMAC-SHA1 over URL + sorted params), wired into `webhook_signature.verify_signature_for_request`. The Twilio branch uses the platform auth token (not a per-client secret) and rebuilds the signed URL from `base_url` so a proxy rewriting scheme/host can't break verification. Closes the prior "fail closed in production" gap — Twilio webhooks can now be received in prod.
+- **Dependency added:** `python-multipart` — `request.form()` requires it and Twilio webhooks are always `application/x-www-form-urlencoded`. The pre-existing Twilio stub already called `request.form()`; it would have failed at runtime. Surfaced by the new route tests.
+- **Tests:** `test_twilio.py` — 17 tests (signature, SMS no-op guards, greeting rendering, route dedupe/scheduling, `_process_missed_call` orchestration); DB + SMS mocked.
+
+### build: AI greeting generation
+- **What:** The missed-call greeting SMS is now generated by the Anthropic API. `webhooks/twilio.py` calls `generate_greeting(config)`; on success the AI text is the SMS body, on any failure it falls back to the existing static `_render_greeting` template — the lead always gets a text ("never silently fail an interaction", per the prompt-engineering skill).
+- **New `prompts/greeting.py`:** a Jinja2 `GREETING_TEMPLATE`, a `PROMPT_VERSIONS` map, and `generate_greeting` → `(text, version)` or `None`. Variables (`business_name`, `category`, `service_area`, `tone_of_voice`) filled from `client_configs`; per-client version pinning via `ClientConfig.prompt_versions`. Follows the repo `prompt-engineering` skill's reference pattern.
+- **New `services/ai.py`:** a process-wide cached `AsyncAnthropic` client — the qualifier and other prompt modules reuse it.
+- **Model `claude-haiku-4-5`** — per the prompt-engineering skill's taxonomy: greetings are cheap, single-turn, speed-critical (a fast text-back is the LLR value prop). A one-line constant.
+- **Cost tracking:** an AI greeting increments `client_configs.ai_interactions_used`; the `Message` row records `ai_generated` + `prompt_version` (`greeting:v1`). The greeting already runs on the cheapest model, so the AI cap never blocks it.
+- **v1 scope:** dropped the skill's `call_time`/`business_hours_status` prompt variables — they need a `timezone` field on `ClientConfig` + time helpers that don't exist yet.
+- **Tests:** `tests/prompts/test_greeting.py` — 8 tests (template render + `generate_greeting` with the Anthropic client mocked). `test_twilio.py` updated to cover the AI and template-fallback paths.
+
+### build: AI qualification loop
+- **What:** The `sms-reply` webhook (previously a stub) now drives a multi-turn SMS qualification conversation. Inbound SMS → dedupe on `MessageSid` → 200 → background task: find the active lead for `(client_id, From)`, persist the inbound message, bump `unqualified→qualifying`, replay the SMS history to the qualifier, apply extracted fields to the lead, send the reply, record the outbound message.
+- **New `prompts/qualifier.py`:** the `QUALIFIER_SYSTEM` Jinja2 template + `qualifier_turn(config, history) → (reply, extracted, version) | None`. Model `claude-sonnet-4-6` per the prompt-engineering skill (multi-turn, stateful). The leading assistant turn (the greeting) is dropped from the replay so the message list starts with a user turn, as the API requires.
+- **Field extraction via a structured `update_lead` tool** — one optional param per canonical field, with enums on `budget_range`/`timeframe`/`qualification_status` matching the DB CHECK constraints, so the model can't emit a constraint-violating value. The model also sets the terminal `qualification_status` (`qualified`/`needs_review`/`spam`) when the conversation concludes. Extracted fields are validated through `LeadUpdate` before the `UPDATE leads`.
+- **No active lead** for an inbound number → logged and ignored (cold inbound SMS without a prior missed call is a later enhancement). **Qualifier unavailable** (no key / failure) → the inbound message is still saved and the lead is flagged `needs_review` — a lead is never dropped.
+- **Cost tracking:** each qualifier turn increments `client_configs.ai_interactions_used`; outbound messages record `prompt_version` (`qualifier:v1`).
+- **Tests:** `tests/prompts/test_qualifier.py` — 8 tests (system render, history mapping, `qualifier_turn` with the Anthropic client mocked incl. tool-use extraction). `test_twilio.py` extended with sms-reply route + `_process_sms_reply` orchestration tests.
+- **Onboarding note:** each client's Twilio number needs its inbound-SMS webhook pointed at `/webhooks/twilio/sms-reply/{client_id}` (Twilio console config).
+
+### build: Owner alert system (VIP triggers)
+- **What:** A lead that matches a client's VIP signals now fires an immediate owner alert. New `services/owner_alert.py` — `find_vip_reason` (deterministic trigger evaluation) and `alert_owner` (dispatch).
+- **Triggers:** (1) keyword — case-insensitive match of `client_configs.vip_keywords` against the inbound SMS text; (2) value — the lead's `budget_range` tier *floor* meets `vip_value_threshold` (conservative mapping: `5k-15k`→$5k, `15k-50k`→$15k, `50k+`→$50k — a lead alerts only when its budget is definitely at/above the threshold).
+- **Dispatch:** email via the existing `notify_owner_vip` + SMS to `owner_alert_phones` (PRD specifies text/email).
+- **Wiring:** evaluated after each qualifier turn in `_process_sms_reply` — where the budget and conversation text are freshest. Deduped via an `owner_alert_sent` event so the owner is alerted at most once per lead. The alert records the event but does not change `qualification_status` — owner-alerting stays decoupled from the qualifier.
+- **Tests:** `tests/services/test_owner_alert.py` — 9 tests (keyword/value triggers, dispatch). `test_twilio.py` extended with a VIP-trigger case.
+
+### build: Admin backend (Retool monitoring layer)
+- **What:** Backend prep for the Retool admin app — the "monitoring layer" needed before Client 1 goes live. The Retool UI itself is a separate weekend of click-through; this is the application-logic + auth + migration the Retool spec needs to talk to.
+- **`verify_admin_token`** (`middleware/auth.py`) — HS256 against `ADMIN_JWT_SECRET`; accepts either the bare secret as a static bearer token (simplest for a single-founder admin) or an HS256 JWT signed with it (rotatable via `exp`). Realizes the path `auth.py` documented but had never implemented.
+- **`get_service_connection`** (`db.py`) — a service-role connection that bypasses RLS, for admin operations that cross tenants or write to `audit_log` (which has no tenant policy by design). Documented as bypass-RLS; use sparingly.
+- **Fix in `services/audit.py`:** `record_audit_event` was previously calling `get_connection` (authenticated role) → `audit_log` RLS would have denied every write. The helper was dormant so it never bit, but now that admin operations actually use it, switched to `get_service_connection`.
+- **Migration 012:** `is_test BOOLEAN NOT NULL DEFAULT FALSE` on `leads` + a partial index. Powers Panel 4's "Mark as test" without an extra endpoint (Retool does a direct UPDATE).
+- **`POST /api/admin/leads/{lead_id}/repush`** (`routers/admin.py`) — the one application-logic admin endpoint. If `external_id` is null, runs `push_lead` (handles the original-push-failed case); else runs `update_lead` with the current canonical fields (syncs CRM to qualifier extractions; **never duplicates** a CRM record). Audit-logs as `operation='sync'`, `actor='founder_retool'`.
+- **`docs/retool-notes.md`** — setup notes covering the Postgres connection, the bearer-token auth, the client-switcher convention, the form-reset gotcha, and the `audit_log.operation` CHECK constraint gotcha (the panel spec's `'update_config'` / `'manual_ai_usage_reset'` values would fail — mapped to `'update'` with the specific action encoded in `target_table` + `snapshot`).
+- **Tests:** `tests/test_admin.py` — 11 tests (verifier unit tests across all five paths; endpoint tests for auth failures, lead-not-found, no-provider, push-when-no-external-id, update-when-set, audit-recorded).
+
+### Status + what's next
+- **Status:** ✅ Full suite 154 passed / 40 skipped (DB-dependent, skip without a local DB), ruff clean across all changed files.
+- **Framework complete:** the full LLR pipeline (missed call → greeting → qualification → owner alerts) and the admin/monitoring backend are both in place. What remains before going live is the Retool UI itself (panels 0–5, ~weekend of click-through against the queries in the panel spec) and turning on `ANTHROPIC_API_KEY` to flip every AI fallback into the live path.
+- `parse_webhook` on both CRM adapters is still a deliberate minimal stub — the CRM *inbound* webhook (`webhooks/crm.py`) and bidirectional sync remain Phase 2.
+- Deferred enhancements: cold inbound SMS without a prior missed call, real-API golden evals for the prompts, numeric `qualification_score`, and the AI `vip_classifier` (deterministic VIP triggers ship now; the AI refinement is later).
+
+---
+
 ## 2026-05-14 — Production accounts provisioned (in progress)
 
 ### build: GitHub account + private repo live

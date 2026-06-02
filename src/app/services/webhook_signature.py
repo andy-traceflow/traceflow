@@ -24,7 +24,8 @@ from uuid import UUID
 import httpx
 from fastapi import Request
 
-from app.config import get_settings
+from app.config import Settings, get_settings
+from app.services.twilio_signature import verify_twilio_signature
 
 logger = logging.getLogger(__name__)
 
@@ -112,9 +113,15 @@ async def verify_signature_for_request(request: Request, client_id: UUID) -> Non
     """
     path = request.url.path
     body = await _read_and_cache_body(request)
-    secret = await _load_signing_secret(client_id, _infer_integration(path))
-
     settings = get_settings()
+
+    # Twilio uses the platform auth token (not a per-client secret) and a
+    # URL+params signature scheme — handle it before the per-client path.
+    if path.startswith("/webhooks/twilio/"):
+        await _verify_twilio_request(request, settings)
+        return
+
+    secret = await _load_signing_secret(client_id, _infer_integration(path))
     if not secret:
         # In dev we let unsigned webhooks through to make local testing
         # ergonomic. In prod we fail closed.
@@ -131,16 +138,6 @@ async def verify_signature_for_request(request: Request, client_id: UUID) -> Non
         if not verify_hmac_sha256_base64(secret, body, sig):
             raise PermissionError("shopify hmac mismatch")
 
-    elif path.startswith("/webhooks/twilio/"):
-        # Twilio's signature is X-Twilio-Signature: base64(HMAC-SHA1(authToken, url + sorted_params)).
-        # See: https://www.twilio.com/docs/usage/security
-        # Verification is more involved than HMAC-of-body; we leave it as a
-        # follow-up in app/services/twilio_signature.py. For now, fail closed
-        # in production until that lands.
-        if settings.is_production:
-            raise PermissionError("twilio signature verification not yet implemented")
-        return
-
     elif path.startswith("/webhooks/generic/"):
         # Generic webhook: per-config; the handler itself validates.
         # Middleware can't know the algorithm without loading the row.
@@ -152,6 +149,33 @@ async def verify_signature_for_request(request: Request, client_id: UUID) -> Non
             raise PermissionError("crm hmac mismatch")
 
     # Unknown webhook path — let it through; route will 404 if invalid.
+
+
+async def _verify_twilio_request(request: Request, settings: Settings) -> None:
+    """Verify an inbound Twilio webhook via the X-Twilio-Signature header.
+
+    Twilio signs the exact public URL it POSTed to plus the form params,
+    HMAC-SHA1 keyed by the account auth token. The URL is rebuilt from the
+    configured base_url so a proxy rewriting scheme or host can't break
+    verification — base_url must match the webhook URL set in the Twilio
+    console.
+    """
+    auth_token = settings.twilio_auth_token
+    if not auth_token:
+        if settings.is_production:
+            raise PermissionError("twilio auth token not configured")
+        logger.warning(
+            "skipping twilio signature check — no auth token (dev only)",
+            extra={"path": request.url.path},
+        )
+        return
+
+    signature = request.headers.get("X-Twilio-Signature", "")
+    url = f"{settings.base_url.rstrip('/')}{request.url.path}"
+    form = await request.form()
+    params = {k: str(v) for k, v in form.items()}
+    if not verify_twilio_signature(auth_token, url, params, signature):
+        raise PermissionError("twilio signature mismatch")
 
 
 async def _read_and_cache_body(request: Request) -> bytes:

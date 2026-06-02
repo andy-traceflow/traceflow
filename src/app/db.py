@@ -132,3 +132,19 @@ async def set_tenant_context(client_id: UUID) -> AsyncIterator[asyncpg.Connectio
             yield conn
     finally:
         _current_tenant.reset(token)
+
+
+@asynccontextmanager
+async def get_service_connection() -> AsyncIterator[asyncpg.Connection]:
+    """Acquire a service-role connection that BYPASSES RLS.
+
+    For admin operations that cross tenants or need to read/write
+    audit_log (which has no tenant policy by design). Stays on the
+    default `postgres` role — we do not `SET ROLE authenticated`. Use
+    sparingly: bypassing RLS is the most dangerous tool we have.
+    """
+    if _pool is None:
+        raise RuntimeError("DB pool not initialized — call init_pool() first")
+    async with _pool.acquire() as conn:
+        async with conn.transaction():
+            yield conn

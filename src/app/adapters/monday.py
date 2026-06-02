@@ -1,9 +1,9 @@
 """Monday.com adapter.
 
 push_lead creates a parent item on the configured board and a subitem
-per line item attached to the lead. Column IDs are auto-discovered by
-display name on first use and cached per board — when a client rotates
-their board (a common ops pattern), the next call re-discovers cleanly.
+per line item attached to the lead. Column IDs are resolved by display
+name on every push/update — the adapter holds no state, so a client
+editing their field mappings takes effect on the next call.
 
 The canonical Lead doesn't carry "line items" directly — they live in
 `raw_payload['line_items']` when a Shopify webhook produced the lead.
@@ -17,6 +17,7 @@ never hardcodes external field names.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -24,6 +25,7 @@ from typing import Any
 import httpx
 
 from app.models.client_config import ClientConfig
+from app.models.crm_contact import ContactType, CRMContact
 from app.models.lead import Lead, LeadCreate
 from app.services.field_mappings import apply_transform, resolve_mappings
 
@@ -31,16 +33,14 @@ logger = logging.getLogger(__name__)
 
 MONDAY_API_URL = "https://api.monday.com/v2"
 DEFAULT_TIMEOUT = 30.0
+# Whole-lookup ceiling. Monday has no contact directory, so a phone search
+# means column discovery + a board query — bounded here so it can never
+# delay the missed-call SMS.
+LOOKUP_TIMEOUT = 2.0
 
 
 class MondayAdapter:
     name = "monday"
-
-    def __init__(self) -> None:
-        # Cache: {board_id: {"parent": {canonical_field: col_id},
-        #                    "subitem": {canonical_field: col_id},
-        #                    "subitem_board_id": <id>}}
-        self._column_cache: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------------
     # CRMAdapter interface
@@ -52,10 +52,10 @@ class MondayAdapter:
         api_key = creds["api_key"]
 
         mappings = await resolve_mappings(lead.client_id, "monday")
-        await self._ensure_columns_cached(board_id, api_key, mappings)
+        columns = await self._discover_columns(board_id, api_key, mappings)
 
         item_name = self._format_item_name(lead)
-        column_values = self._build_parent_columns(lead, mappings, board_id)
+        column_values = self._build_parent_columns(lead, mappings, columns)
 
         parent_id = await self._create_item(
             api_key=api_key,
@@ -70,9 +70,8 @@ class MondayAdapter:
             await self._create_subitems_for_line_items(
                 api_key=api_key,
                 parent_id=parent_id,
-                board_id=board_id,
                 line_items=line_items,
-                mappings=mappings,
+                columns=columns,
             )
 
         return parent_id
@@ -88,8 +87,8 @@ class MondayAdapter:
         api_key = creds["api_key"]
 
         mappings = await resolve_mappings(config.client_id, "monday")
-        await self._ensure_columns_cached(board_id, api_key, mappings)
-        parent_cols = self._column_cache[board_id]["parent"]
+        columns = await self._discover_columns(board_id, api_key, mappings)
+        parent_cols = columns["parent"]
 
         for canonical_field, value in updates.items():
             col_id = parent_cols.get(canonical_field)
@@ -137,25 +136,111 @@ class MondayAdapter:
             logger.warning("monday health_check failed", exc_info=e)
             return False
 
+    async def lookup_by_phone(
+        self,
+        phone: str,
+        config: ClientConfig,
+    ) -> CRMContact | None:
+        """Best-effort phone lookup against the client's board.
+
+        Monday is a project board, not a contact CRM: matching by phone
+        depends on the client having mapped a phone column. When that isn't
+        possible — no mapping, no match, timeout, or any error — this returns
+        None and the caller proceeds as potential_lead. A found item is
+        reported as contact_type=unknown; the board carries no reliable
+        customer-vs-vendor signal, so disposition defers to the post-reply
+        intent classifier.
+        """
+        try:
+            return await asyncio.wait_for(
+                self._lookup_impl(phone, config), timeout=LOOKUP_TIMEOUT
+            )
+        except Exception as e:
+            logger.warning("monday lookup_by_phone failed/timed out", exc_info=e)
+            return None
+
+    async def _lookup_impl(self, phone: str, config: ClientConfig) -> CRMContact | None:
+        try:
+            creds = self._creds(config)
+        except ValueError:
+            return None
+        board_id = str(creds["board_id"])
+        api_key = creds["api_key"]
+
+        mappings = await resolve_mappings(config.client_id, "monday")
+        phone_mapping = mappings.get("phone")
+        if not phone_mapping or phone_mapping.external_field_type != "column":
+            return None
+
+        columns = await self._discover_columns(board_id, api_key, mappings)
+        phone_col = columns.get("parent", {}).get("phone")
+        if not phone_col:
+            return None
+
+        items = await self._find_items_by_column(api_key, board_id, phone_col, phone)
+        if not items:
+            return None
+        item = items[0]
+        return CRMContact(
+            external_id=str(item["id"]),
+            name=item.get("name"),
+            tags=[],
+            contact_type=ContactType.unknown,
+        )
+
+    async def _find_items_by_column(
+        self,
+        api_key: str,
+        board_id: str,
+        column_id: str,
+        value: str,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        query = """
+        query ($boardId: ID!, $columnId: String!, $value: String!, $limit: Int!) {
+            items_page_by_column_values(
+                board_id: $boardId,
+                limit: $limit,
+                columns: [{column_id: $columnId, column_values: [$value]}]
+            ) {
+                items { id name }
+            }
+        }
+        """
+        data = await self._request(
+            api_key,
+            query,
+            {"boardId": board_id, "columnId": column_id, "value": value, "limit": limit},
+        )
+        if not data:
+            return []
+        page = data.get("data", {}).get("items_page_by_column_values") or {}
+        return page.get("items") or []
+
     # ------------------------------------------------------------------
     # Internals — column discovery
     # ------------------------------------------------------------------
 
-    async def _ensure_columns_cached(
+    async def _discover_columns(
         self,
         board_id: str,
         api_key: str,
         mappings: dict[str, Any],
-    ) -> None:
-        """Resolve column IDs by display name and cache them.
+    ) -> dict[str, Any]:
+        """Resolve column IDs by display name.
 
-        We resolve every canonical field that has a mapping with
+        Returns {"parent": {canonical_field: col_id},
+                 "subitem": {canonical_field: col_id},
+                 "subitem_board_id": <id> | None}.
+
+        Resolves every canonical field with a mapping of
         external_field_type='column'. Subitem columns are resolved by
         following the parent board's 'subtasks' column to discover the
-        subitem board ID, then querying its columns.
+        subitem board ID, then querying its columns. Runs on every
+        push/update — the adapter caches nothing, so a client editing
+        their field mappings takes effect immediately.
         """
-        if board_id in self._column_cache and self._column_cache[board_id].get("parent"):
-            return
+        empty: dict[str, Any] = {"parent": {}, "subitem": {}, "subitem_board_id": None}
 
         query = """
         query ($boardId: [ID!]) {
@@ -167,7 +252,7 @@ class MondayAdapter:
         data = await self._request(api_key, query, {"boardId": [board_id]})
         if not data or not data.get("data", {}).get("boards"):
             logger.error("monday column discovery: board not found", extra={"board_id": board_id})
-            return
+            return empty
 
         parent_cols = data["data"]["boards"][0]["columns"]
         parent_map: dict[str, str] = {}
@@ -208,11 +293,6 @@ class MondayAdapter:
                 if col["title"].lower() == "quantity" and "quantity" not in subitem_map:
                     subitem_map["quantity"] = col["id"]
 
-        self._column_cache[board_id] = {
-            "parent": parent_map,
-            "subitem": subitem_map,
-            "subitem_board_id": subitem_board_id,
-        }
         logger.info(
             "monday columns discovered",
             extra={
@@ -222,6 +302,11 @@ class MondayAdapter:
                 "subitem_board_id": subitem_board_id,
             },
         )
+        return {
+            "parent": parent_map,
+            "subitem": subitem_map,
+            "subitem_board_id": subitem_board_id,
+        }
 
     # ------------------------------------------------------------------
     # Internals — column value composition
@@ -240,11 +325,10 @@ class MondayAdapter:
         self,
         lead: Lead,
         mappings: dict[str, Any],
-        board_id: str,
+        columns: dict[str, Any],
     ) -> dict[str, Any]:
         """Translate canonical Lead fields → Monday column_values JSON."""
-        cache = self._column_cache.get(board_id, {})
-        parent_cols = cache.get("parent", {})
+        parent_cols = columns.get("parent", {})
 
         out: dict[str, Any] = {}
 
@@ -301,12 +385,10 @@ class MondayAdapter:
         *,
         api_key: str,
         parent_id: str,
-        board_id: str,
         line_items: list[dict[str, Any]],
-        mappings: dict[str, Any],
+        columns: dict[str, Any],
     ) -> None:
-        cache = self._column_cache.get(board_id, {})
-        subitem_cols = cache.get("subitem", {})
+        subitem_cols = columns.get("subitem", {})
         qty_col = subitem_cols.get("quantity")
 
         for li in line_items:

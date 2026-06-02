@@ -189,7 +189,7 @@ stages:
 
 ---
 
-## 3. Technical Lead Lifecycle (event → CRM record)
+## 3. Technical Lead Lifecycle (event → routed outcome)
 
 ```yaml
 workflow: lead_lifecycle
@@ -208,11 +208,73 @@ stages:
     exit_criteria: event recorded with client_id
     duration_target: <100ms
 
+  - id: caller_classification          # NEW — runs BEFORE any message is sent
+    inputs: [validated_event]          # caller phone, called number, client_id
+    activities:
+      - Active-conversation check: is this caller already mid-conversation
+        with TraceFlow for this client? If yes → route=active_conversation.
+      - CRM lookup (best-effort, via adapter.lookup_by_phone): does this number
+        already exist in the client's CRM?
+          - Match tagged as customer  → route=existing_customer
+          - Match tagged as vendor/partner → route=known_non_lead
+          - No match → continue
+      - Spam scoring (if spam_filtering_enabled): Twilio Lookup risk signal vs
+        the client's configured threshold.
+          - Above threshold → route=spam
+          - Below → continue
+      - Default → route=potential_lead
+    outputs: [routing_decision]
+    routing_decision_values:
+      - active_conversation
+      - existing_customer
+      - known_non_lead
+      - spam
+      - potential_lead
+    degradation:
+      - If CRM lookup is unsupported by the client's adapter, fails, or no CRM
+        is configured → skip the CRM step, fall through toward potential_lead.
+        A lookup failure must NEVER drop a real lead. Post-reply intent
+        classification is the safety net.
+    exit_criteria: routing_decision assigned
+    duration_target: <2s (CRM lookup + spam lookup are the cost)
+
+  - id: route_dispatch                 # NEW — acts on the routing decision
+    inputs: [routing_decision, validated_event]
+    branches:
+      active_conversation:
+        - Append the inbound event to the existing conversation thread
+        - Resume that conversation's existing state (do not create a new lead)
+        - Exit lifecycle (handled by the live conversation)
+      existing_customer:
+        - Do NOT run sales qualification
+        - If text_existing_customers=true: send a customer-appropriate
+          acknowledgment ("Hi [name], sorry we missed you — letting the team
+          know you called, someone will reach out shortly")
+        - Alert existing_customer_alert_contact immediately (an existing
+          customer hitting voicemail is a priority service event, higher than
+          a cold lead)
+        - Log as support_touch, not a lead
+        - Exit lifecycle
+      known_non_lead:
+        - Do NOT run sales qualification
+        - If text_vendors=true: send a minimal acknowledgment; else send nothing
+        - Alert owner contact
+        - Log as non_lead_contact
+        - Exit lifecycle
+      spam:
+        - Send nothing
+        - Mark event as spam (for metrics + future suppression)
+        - Exit lifecycle (zero SMS spend, zero AI spend)
+      potential_lead:
+        - Proceed to lead_creation
+    exit_criteria: event routed; only potential_lead continues downstream
+
   - id: lead_creation
-    inputs: [validated_event]
+    inputs: [routing_decision=potential_lead]
     activities:
       - Create Lead record with raw_payload preserved
-      - Initial qualification_status = 'unqualified'
+      - qualification_status = 'unqualified'
+      - classification = 'potential_lead' (carried for metrics)
       - Source system tagged
     outputs: [lead_record]
     exit_criteria: lead row inserted
@@ -221,19 +283,43 @@ stages:
   - id: ai_outreach
     inputs: [lead_record, client_config]
     activities:
-      - Generate personalized greeting via Anthropic API
+      - Generate the NEUTRAL opening greeting via the AI (works for any caller
+        type; never pre-judges as a sales prospect)
       - Use client's greeting_template with variables filled
-      - Send via Twilio SMS (or email/chat depending on channel)
+      - Send via Twilio SMS
     outputs: [outbound_message]
     exit_criteria: message delivered (Twilio webhook confirms)
     duration_target: <30 seconds from missed call
 
-  - id: ai_qualification
-    inputs: [inbound_reply]  # client responds via SMS
+  - id: intent_classification          # NEW — runs on the FIRST inbound reply
+    inputs: [first_inbound_reply, lead_record, client_config]
     activities:
-      - Process reply through qualification prompt
+      - AI classifies intent from the reply content (this is the safety net for
+        existing customers / vendors who called from an unrecognized number, and
+        the first real signal of genuine sales intent)
+      - Intent values: sales | existing_customer | non_lead | spam | ambiguous
+    outputs: [intent]
+    branches:
+      sales:
+        - Proceed to ai_qualification
+      existing_customer:
+        - Stop qualifying; capture message; alert human; reclassify lead as
+          support_touch; exit
+      non_lead:
+        - Capture; alert owner; mark non_lead_contact; exit
+      spam:
+        - Stop responding; mark spam; exit
+      ambiguous:
+        - Ask ONE clarifying question; re-run intent_classification on next reply
+    exit_criteria: intent assigned and acted on
+    duration_target: <10s per turn
+
+  - id: ai_qualification
+    inputs: [intent=sales, ongoing_conversation]
+    activities:
+      - Process replies through qualification prompt
       - Extract canonical fields: service_type, sqft, budget, timeframe, etc.
-      - Multi-turn conversation until enough data captured OR lead disqualifies
+      - Multi-turn until enough data captured OR lead disqualifies
       - Update qualification_score 0-100
     outputs: [qualified_lead | disqualified_lead]
     exit_criteria: qualification_status updated, score assigned
@@ -251,23 +337,34 @@ stages:
     exit_criteria: external_id populated
     duration_target: <5 seconds
 
-  - id: owner_alert  # conditional
+  - id: owner_alert                    # conditional
     inputs: [synced_lead, client_config.vip_keywords]
     activities:
-      - Evaluate if lead matches VIP signals (keywords, value threshold, urgency)
-      - If yes: send immediate SMS or email to designated owner contact
+      - Evaluate VIP signals (keywords, value threshold, urgency)
+      - If yes: immediate SMS or email to designated owner contact
     outputs: [alert_sent | no_alert]
     exit_criteria: decision made, alert delivered if triggered
 
-  - id: digest_inclusion  # scheduled
-    inputs: [all_leads_in_24h_window]
+  - id: digest_inclusion              # scheduled — IMPLEMENTED in jobs/daily_digest.py
+    inputs: [all_genuine_leads_in_24h_window]
     activities:
-      - Nightly cron iterates over all active clients
-      - Generate per-client digest with day's leads + metrics
-      - Send via Resend/Postmark
+      - Hourly cron; each client gated to its own 06:00 local (zoneinfo), idempotent
+        via a daily_digest_sent event; enumerated through get_service_connection()
+      - Per-client digest with the day's GENUINE leads + metrics
+      - recovery_rate = replied / captured over classification='potential_lead' ONLY
+        (excludes spam, existing customers, vendors); "replied" = lead left 'unqualified'
+      - Also surfaces the silently-handled dispositions (spam / non_lead_contact /
+        support_touch) so the owner sees the noise the system absorbed
+      - Skipped on zero-activity days; degrades to a no-op if RESEND_API_KEY is unset
     outputs: [daily_digest_email]
     runs_at: 06:00 client_timezone
 ```
+
+> **Schema dependencies applied with this revision:**
+> - `client_configs.classification_config`, `existing_customer_alert_contact`, `vendor_allowlist` — migration `013_add_classification_config_to_client_configs.sql`, mirrored on `app.models.client_config.ClientConfig`.
+> - `CRMAdapter.lookup_by_phone(phone, config) -> CRMContact | None` — `src/app/adapters/base.py`; canonical `CRMContact` in `src/app/models/crm_contact.py`. Must degrade to `None` (never raise), so a lookup failure can't drop a lead.
+>
+> **Runtime tier — BUILT** (2026-06-01, branch `feat/caller-classification-runtime`; see ADR-0002). Shipped in four slices: `leads.classification` (migration 014) + `support_touch`/`non_lead_contact` statuses (migration 015); `services/classification.py` (caller_classification + route_dispatch); `prompts/intent.py` (post-reply intent_classification); `services/spam.py` (Twilio Lookup spam scoring); per-adapter `lookup_by_phone` (GHL, Monday); and the digest recovery-rate denominator (`jobs/daily_digest.py`, over `classification='potential_lead'` only). Every failing or ambiguous path degrades to `potential_lead` — a lookup failure never drops a lead, and the post-reply intent classifier is the safety net. The neutral opener remains the connective tissue that keeps a misclassified contact recoverable.
 
 ---
 

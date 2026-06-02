@@ -43,6 +43,11 @@ class ClientConfig(BaseModel):
     # Feature flags
     feature_flags: dict[str, Any] = Field(default_factory=dict)
 
+    # Caller classification (lead lifecycle Section 3)
+    classification_config: dict[str, Any] = Field(default_factory=dict)
+    existing_customer_alert_contact: str | None = None
+    vendor_allowlist: list[str] = Field(default_factory=list)
+
     updated_at: datetime
 
     model_config = {"from_attributes": True}
@@ -73,3 +78,32 @@ class ClientConfig(BaseModel):
 
     def webhook_secret(self, integration: str) -> str | None:
         return self.webhook_signing_secrets.get(integration)
+
+    # ------------------------------------------------------------------
+    # Caller-classification tolerances. Defaults baked in here (matching
+    # migration 013) so a row with a partial/empty classification_config
+    # still behaves correctly.
+    # ------------------------------------------------------------------
+    @property
+    def crm_lookup_enabled(self) -> bool:
+        return bool(self.classification_config.get("crm_lookup_enabled", True))
+
+    @property
+    def spam_filtering_enabled(self) -> bool:
+        return bool(self.classification_config.get("spam_filtering_enabled", True))
+
+    @property
+    def spam_risk_threshold(self) -> str:
+        return self.classification_config.get("spam_risk_threshold", "moderate")
+
+    @property
+    def text_existing_customers(self) -> bool:
+        return bool(self.classification_config.get("text_existing_customers", True))
+
+    @property
+    def text_vendors(self) -> bool:
+        return bool(self.classification_config.get("text_vendors", False))
+
+    @property
+    def drop_spam_silently(self) -> bool:
+        return bool(self.classification_config.get("drop_spam_silently", True))
