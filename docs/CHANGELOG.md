@@ -6,6 +6,14 @@
 
 ---
 
+## 2026-06-10 — Brand accent: signal orange → signal blue
+
+### decision: recolor the accent across both surfaces
+- Landing (light bg): `--accent #ff5c1a → #2563eb`, hover `#1d4ed8`, soft tint + pulse rgba updated (traceflow-landing `fd5967e`, auto-deployed). Admin SPA (dark bg): `--color-signal #ff6a00 → #3b82f6` — same hue, brighter step for dark surfaces (`793d9b2`, bundle rebuilt). Browser-verified on both.
+- Operational learning baked in: the landing stylesheet had no cache-busting and browsers heuristically cache it for days — `styles.css` is now linked as `?v=YYYYMMDD`; **bump the version on every styles.css edit** or returning visitors keep the old palette.
+
+---
+
 ## 2026-06-10 — Self-hosted admin surface (/api/admin + /admin SPA) replaces the Retool plan
 
 ### decision: build the admin tool in-repo, not Retool (ADR-0004)
