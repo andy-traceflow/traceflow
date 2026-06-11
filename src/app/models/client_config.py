@@ -48,6 +48,9 @@ class ClientConfig(BaseModel):
     existing_customer_alert_contact: str | None = None
     vendor_allowlist: list[str] = Field(default_factory=list)
 
+    # Revenue tracking (recovered-revenue attribution)
+    revenue_config: dict[str, Any] = Field(default_factory=dict)
+
     updated_at: datetime
 
     model_config = {"from_attributes": True}
@@ -107,3 +110,20 @@ class ClientConfig(BaseModel):
     @property
     def drop_spam_silently(self) -> bool:
         return bool(self.classification_config.get("drop_spam_silently", True))
+
+    # ------------------------------------------------------------------
+    # Revenue-tracking config. Default 'estimated' (the digest's budget-bucket
+    # proxy) so a tenant with no revenue_config behaves exactly as before.
+    # ------------------------------------------------------------------
+    @property
+    def revenue_mode(self) -> str:
+        """'estimated' | 'owner_report' | 'crm'. Only 'crm' runs CRM readback."""
+        return self.revenue_config.get("mode", "estimated")
+
+    @property
+    def attribution_window_days(self) -> int:
+        """Days after creation a lead's CRM value is tracked, then frozen."""
+        try:
+            return int(self.revenue_config.get("attribution_window_days", 90))
+        except (TypeError, ValueError):
+            return 90

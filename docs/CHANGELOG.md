@@ -6,6 +6,47 @@
 
 ---
 
+## 2026-06-07 — Recovered-revenue capture (outcome model + owner-report + HubSpot readback)
+
+### build: booked-outcome axis on the lead (migration 016)
+- New `leads.outcome` (`open`/`won`/`lost`) + `recovered_value` (NUMERIC) + `outcome_source` (`crm`/`owner_report`/`estimated`) + `outcome_recorded_at`. Orthogonal to `qualification_status` and `classification` — a third axis recording whether a recovered lead **booked**, and for how much. `outcome_source` is provenance so actuals are never blended with the digest's budget-bucket estimate. `client_configs.revenue_config` JSONB (`{mode, attribution_window_days}`) picks the source per tenant; default `{}` → `estimated`, behaves exactly as before. Backfills `outcome='open'`. See ADR-0003.
+
+### build: owner-report capture — the universal, no-CRM baseline (`routers/admin.py`)
+- `POST /api/admin/leads/{id}/outcome` records `outcome` + `recovered_value` with `outcome_source='owner_report'` (the founder enters it from Retool, e.g. after the monthly review). A `won` outcome requires a `recovered_value`. Works for **every** client, CRM or not — this is how the no-CRM case is handled, and it's the v1 for everyone.
+
+### build: HubSpot CRM readback (`adapters/*`, `jobs/revenue_sync.py`)
+- `CRMAdapter.fetch_recovered_value(external_id, config) -> Decimal | None` added to the Protocol (best-effort, degrades to `None` like `lookup_by_phone`). **HubSpot** reads contact `total_revenue` (closed-won rollup); GHL/Monday return `None` for now (their clients use owner-report) with clear TODOs.
+- `jobs/revenue_sync.py` (daily Render cron) sweeps `mode='crm'` clients: for each pushed lead within `attribution_window_days` (default 90), reads the CRM value back and freezes it onto the lead (`recovered_value`, `outcome='won'`, `outcome_source='crm'`). **Snapshot-bounded** — refreshed while in window to catch deal growth, then frozen, so a second job months later never inflates the figure attributed to the original missed call. Finally gives `sync_log` (migration 007) a real user. Zero AI/Twilio spend → runs in Phase 0.
+
+### attribution unit: contact "total spent," snapshot-bounded
+- Chose contact-level `total_revenue` over per-deal amounts: recovered leads are new by construction (existing customers filtered upstream by `classification`), so total spend ≈ the recovered job; the window bounds lifetime drift. ADR-0003 records the tradeoff + the per-deal alternative.
+
+### tests
+- `tests/adapters/test_hubspot_adapter.py` (+6), `tests/test_admin.py` (+4), `tests/jobs/test_revenue_sync.py` (+3). Full offline suite **302 passed / 40 skipped**, ruff clean.
+
+### not yet built
+- The `monthly_performance_report` job (workflow-schema §4) that rolls `recovered_value` + ROI into the client email — the data plumbing now exists; the report is the next increment. GHL/Monday `fetch_recovered_value`. No new migration beyond 016; go-live still gated on the unmerged `feat/caller-classification-runtime` branch (apply 012–016, set keys, merge).
+
+---
+
+## 2026-06-07 — Automatic CRM push on qualification + HubSpot adapter
+
+### build: crm_push wired into the qualifier flow (`webhooks/twilio.py`)
+- The `crm_push` stage (workflow-schema Section 3) now runs **automatically**. When a qualifier turn moves a lead to `qualified`/`high_value`, `_maybe_push_to_crm` loads the canonical lead, calls the registered adapter's `push_lead`, and commits `external_id` + `pushed_to_crm_at`. Until now a qualified lead only reached the CRM via the manual `POST /api/admin/leads/{id}/repush` endpoint — PRD §5 deliverable #4 ("CRM auto-population") was effectively manual.
+- Same graceful-degradation contract as the rest of the pipeline: no-op when the client has no `crm_provider` or the provider has no adapter; **idempotent** (never re-pushes a lead that already has an `external_id`, so no duplicate CRM record); never raises into the leads pipeline. Failure records a `crm_push_failed` event (re-pushable from admin); success records `crm_pushed`. Adapter network IO runs outside any DB transaction. Fires only on the inbound-SMS/qualifier path; the missed-call greeting still just creates the `unqualified` lead. `needs_review`/`spam` are not pushed.
+
+### build: HubSpot adapter (`adapters/hubspot.py`, registered as `hubspot`)
+- Full `CRMAdapter`: `push_lead`/`update_lead` against CRM v3 `/crm/v3/objects/contacts` (flat `properties` object), `lookup_by_phone` (broad search + last-10-digit confirm, ~2s timeout, degrades to `None`), `health_check`, and a `parse_webhook` stub (bidirectional sync is Phase 2). Auth is a per-client Private App `access_token` in `crm_credentials`.
+- Mapping-driven like GHL/Monday, with a default standard-property map (`firstname`/`company`/`phone`/`email`/`address`) so a zero-config tenant still pushes; explicit `client_field_mappings` (`standard` or `custom_property`) override per field. `crm_provider` CHECK already allowed `'hubspot'` (migration 001) and `FieldMapping` already had `custom_property` — **no migration needed**.
+
+### tests
+- `tests/adapters/test_hubspot_adapter.py` (15) + `tests/webhooks/test_twilio_crm_push.py` (6, the first webhook-level tests for the qualifier flow). Full offline suite **289 passed / 40 skipped**, ruff clean. (mypy shows the same pre-existing `no-any-return` on `resp.json()` that ghl/monday already carry — not a CI gate.)
+
+### note: still on branch `feat/caller-classification-runtime`
+- Lands on the same unmerged branch as the 2026-06-01 runtime tier. No new migration; go-live steps unchanged (apply 012–015 via `scripts/apply_migrations.py`, set `ANTHROPIC_API_KEY`, merge). Auto-push activates for any client whose `client_configs.crm_provider` is set with valid `crm_credentials`; clients with no CRM are unaffected.
+
+---
+
 ## 2026-06-01 — Caller-classification runtime tier (LLR stops treating every missed call as a lead)
 
 ### milestone: the classification runtime tier is built end-to-end

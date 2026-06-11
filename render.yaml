@@ -40,6 +40,19 @@ services:
         value: "3.12"
       - fromGroup: traceflow-secrets
 
+  - type: cron
+    name: revenue-sync
+    runtime: python
+    schedule: "0 3 * * *"  # daily 03:00 UTC; CRM revenue readback (mode='crm' clients)
+    buildCommand: pip install -e .
+    startCommand: python -m app.jobs.revenue_sync
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: PYTHON_VERSION
+        value: "3.12"
+      - fromGroup: traceflow-secrets
+
 envVarGroups:
   - name: traceflow-secrets
     envVars:

@@ -11,6 +11,7 @@ without the original webhook body is misery.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
@@ -44,6 +45,24 @@ class Classification(StrEnum):
     spam = "spam"
 
 
+class LeadOutcome(StrEnum):
+    """Whether a recovered lead ultimately booked. Orthogonal to
+    qualification_status and classification; drives recovered-revenue metrics."""
+
+    open = "open"
+    won = "won"
+    lost = "lost"
+
+
+class OutcomeSource(StrEnum):
+    """Where a lead's recovered_value came from — provenance keeps actuals
+    (crm / owner_report) from being blended with the budget-bucket estimate."""
+
+    crm = "crm"
+    owner_report = "owner_report"
+    estimated = "estimated"
+
+
 class Lead(BaseModel):
     id: UUID
     client_id: UUID
@@ -64,6 +83,13 @@ class Lead(BaseModel):
     qualification_status: QualificationStatus = QualificationStatus.unqualified
     qualification_score: int | None = None
     classification: Classification = Classification.potential_lead
+
+    # Booked outcome (recovered-revenue attribution) — set by the revenue_sync
+    # CRM readback or the admin outcome endpoint; never by the AI/qualifier.
+    outcome: LeadOutcome = LeadOutcome.open
+    recovered_value: Decimal | None = None
+    outcome_source: OutcomeSource | None = None
+    outcome_recorded_at: datetime | None = None
 
     notes: str = ""
     raw_payload: dict[str, Any]

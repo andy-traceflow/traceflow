@@ -19,9 +19,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Request, Response
 
+from app.adapters.registry import get_adapter
 from app.db import set_tenant_context
 from app.models.client_config import ClientConfig
-from app.models.lead import LeadCreate, LeadUpdate, QualificationStatus
+from app.models.lead import Lead, LeadCreate, LeadUpdate, QualificationStatus
 from app.models.message import Message
 from app.prompts.greeting import generate_greeting
 from app.prompts.intent import DEFAULT_INTENT_VERSION, Intent, classify_intent
@@ -41,6 +42,13 @@ router = APIRouter(prefix="/webhooks/twilio", tags=["webhooks"])
 INTENT_CLARIFIER = (
     "Happy to help! Are you after a quote for new work, or is this about an "
     "existing job? Just a quick word so I can point you to the right person."
+)
+
+# Qualification states that warrant an automatic CRM push (crm_push stage in
+# docs/workflow-schema.md Section 3). high_value is included for forward
+# compatibility — the qualifier sets 'qualified' today.
+_CRM_PUSH_STATUSES = frozenset(
+    {QualificationStatus.qualified, QualificationStatus.high_value}
 )
 
 
@@ -463,6 +471,14 @@ async def _process_sms_reply(client_id: UUID, payload: dict[str, Any]) -> None:
         },
     )
 
+    # crm_push (workflow-schema Section 3): a lead the qualifier just moved to
+    # a qualified state lands in the client's CRM automatically. No-op when the
+    # turn didn't qualify it, when the client has no CRM, or when it was already
+    # pushed — all handled inside the helper.
+    new_status = updates.get("qualification_status") or prior_status
+    if new_status in _CRM_PUSH_STATUSES:
+        await _maybe_push_to_crm(client_id, lead_id, config)
+
     # VIP check — alert the owner at most once per lead.
     if not already_alerted:
         await _check_vip_and_alert(
@@ -667,6 +683,98 @@ async def _check_vip_and_alert(
     logger.info(
         "owner alert sent",
         extra={"client_id": str(client_id), "lead_id": str(lead_id), "reason": reason},
+    )
+
+
+async def _maybe_push_to_crm(
+    client_id: UUID,
+    lead_id: UUID,
+    config: ClientConfig,
+) -> None:
+    """Push a freshly-qualified lead into the client's CRM (crm_push stage).
+
+    Fire-and-forget from the qualifier turn, with the same graceful-degradation
+    contract as the rest of the pipeline — it never raises into the caller:
+      * No-op when the client has no crm_provider or the provider has no adapter.
+      * Idempotent: a lead that already has an external_id is left alone, so a
+        re-run can never create a duplicate CRM record (mirrors admin re-push).
+      * On failure, the error is logged to the events stream so the founder can
+        re-push from the admin tool; the lead row itself is untouched.
+
+    The adapter call is external network IO and is made outside any DB
+    transaction; the resulting external_id + pushed_to_crm_at are committed in
+    a separate tenant-scoped block.
+    """
+    if not config.crm_provider:
+        return
+    try:
+        adapter = get_adapter(config.crm_provider)
+    except ValueError:
+        logger.warning(
+            "crm push: unknown crm_provider — skipping",
+            extra={"client_id": str(client_id), "provider": config.crm_provider},
+        )
+        return
+
+    async with set_tenant_context(client_id) as conn:
+        lead_row = await conn.fetchrow("SELECT * FROM leads WHERE id = $1", lead_id)
+    if lead_row is None:
+        return
+    lead = Lead(**dict(lead_row))
+
+    # Already in the CRM — updates are the admin re-push's job, not the hot path.
+    if lead.external_id is not None:
+        return
+
+    try:
+        external_id = await adapter.push_lead(lead, config)
+    except Exception as e:
+        logger.warning(
+            "crm push failed",
+            extra={
+                "client_id": str(client_id),
+                "lead_id": str(lead_id),
+                "provider": config.crm_provider,
+            },
+            exc_info=e,
+        )
+        async with set_tenant_context(client_id) as conn:
+            await conn.execute(
+                """
+                INSERT INTO events (client_id, lead_id, event_type, payload)
+                VALUES ($1, $2, 'crm_push_failed', $3)
+                """,
+                client_id,
+                lead_id,
+                {"provider": config.crm_provider, "error": str(e)[:500]},
+            )
+        return
+
+    async with set_tenant_context(client_id) as conn:
+        await conn.execute(
+            "UPDATE leads SET external_id = $1, pushed_to_crm_at = NOW() "
+            "WHERE id = $2 AND client_id = $3",
+            external_id,
+            lead_id,
+            client_id,
+        )
+        await conn.execute(
+            """
+            INSERT INTO events (client_id, lead_id, event_type, payload)
+            VALUES ($1, $2, 'crm_pushed', $3)
+            """,
+            client_id,
+            lead_id,
+            {"provider": config.crm_provider, "external_id": external_id},
+        )
+    logger.info(
+        "crm push complete",
+        extra={
+            "client_id": str(client_id),
+            "lead_id": str(lead_id),
+            "provider": config.crm_provider,
+            "external_id": external_id,
+        },
     )
 
 

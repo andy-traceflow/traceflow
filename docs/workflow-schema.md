@@ -325,14 +325,21 @@ stages:
     exit_criteria: qualification_status updated, score assigned
     duration_target: 2-10 minutes of conversation
 
-  - id: crm_push
+  - id: crm_push                       # IMPLEMENTED in webhooks/twilio.py:_maybe_push_to_crm
     inputs: [qualified_lead]
     activities:
-      - Look up client's CRM adapter from registry
+      - Runs automatically when a qualifier turn sets qualification_status to
+        'qualified'/'high_value' (the inbound-SMS path; needs_review/spam are not pushed)
+      - Look up client's CRM adapter from registry (no crm_provider / unknown provider → no-op)
       - Look up field mappings
       - Translate canonical Lead → client CRM payload
       - Push via adapter.push_lead()
-      - Update lead.external_id and pushed_to_crm_at
+      - Update lead.external_id and pushed_to_crm_at; record a crm_pushed event
+    degradation:
+      - Idempotent: a lead that already has an external_id is never re-pushed (no
+        duplicate CRM record). A push failure records a crm_push_failed event and
+        leaves the lead untouched for manual re-push (POST /api/admin/leads/{id}/repush);
+        it never raises into the leads pipeline.
     outputs: [synced_lead]
     exit_criteria: external_id populated
     duration_target: <5 seconds
@@ -396,12 +403,26 @@ cadences:
       - Note any clients trending down
     output: weekly_health_log
     
-  - id: monthly_performance_report
+  - id: revenue_readback                # IMPLEMENTED in jobs/revenue_sync.py (ADR-0003)
+    frequency: daily
+    activities:
+      - For clients with revenue_config.mode='crm', read each pushed lead's booked
+        value back from the CRM (adapter.fetch_recovered_value — HubSpot total_revenue)
+        within attribution_window_days and freeze it onto leads.recovered_value /
+        outcome='won' (outcome_source='crm'). Snapshot-bounded so a later second job
+        never inflates the figure attributed to the original missed call.
+      - Clients with no CRM (or mode != 'crm') capture recovered_value via the admin
+        outcome endpoint (POST /api/admin/leads/{id}/outcome, outcome_source='owner_report').
+    output: confirmed_recovered_revenue
+
+  - id: monthly_performance_report      # NOT yet built — data plumbing (outcome/recovered_value) now exists
     frequency: monthly
     delivery_by: 5th of month
     activities:
       - Auto-generate per-client report from leads/events tables
-      - Metrics: leads captured, conversion %, attributed revenue, hours saved
+      - Metrics: leads captured, conversion %, recovered revenue (actuals from
+        leads.recovered_value, labeled by outcome_source — never blended with the
+        budget-bucket estimate), hours saved
       - Send via email with branded template
     output: client_performance_report
     

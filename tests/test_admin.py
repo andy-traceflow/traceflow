@@ -240,3 +240,64 @@ def test_repush_updates_when_external_id_set(client):
     assert body["external_id"] == "monday-item-existing"
     adapter.update_lead.assert_awaited_once()
     adapter.push_lead.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# /api/admin/leads/{lead_id}/outcome — recovered-revenue capture
+# ---------------------------------------------------------------------------
+
+def test_outcome_no_auth_returns_401(client):
+    resp = client.post(
+        f"/api/admin/leads/{uuid4()}/outcome",
+        json={"outcome": "won", "recovered_value": 4500},
+    )
+    assert resp.status_code == 401
+
+
+def test_outcome_won_without_value_returns_400(client):
+    # Validation happens before any DB access.
+    resp = client.post(
+        f"/api/admin/leads/{uuid4()}/outcome",
+        headers={"Authorization": f"Bearer {ADMIN_SECRET}"},
+        json={"outcome": "won"},
+    )
+    assert resp.status_code == 400
+
+
+def test_outcome_lead_not_found_returns_404(client):
+    conn = AsyncMock()
+    conn.fetchrow.return_value = None
+
+    with patch("app.routers.admin.get_service_connection", new=_fake_service_conn(conn)):
+        resp = client.post(
+            f"/api/admin/leads/{uuid4()}/outcome",
+            headers={"Authorization": f"Bearer {ADMIN_SECRET}"},
+            json={"outcome": "won", "recovered_value": 4500},
+        )
+    assert resp.status_code == 404
+
+
+def test_outcome_won_records_value_and_audits(client):
+    cid = uuid4()
+    conn = AsyncMock()
+    conn.fetchrow.return_value = {"client_id": cid}
+
+    with (
+        patch("app.routers.admin.get_service_connection", new=_fake_service_conn(conn)),
+        patch("app.routers.admin.record_audit_event", new=AsyncMock()) as mock_audit,
+    ):
+        resp = client.post(
+            f"/api/admin/leads/{uuid4()}/outcome",
+            headers={"Authorization": f"Bearer {ADMIN_SECRET}"},
+            json={"outcome": "won", "recovered_value": "4500.00"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["outcome"] == "won"
+    assert body["recovered_value"] == "4500.00"
+    assert body["source"] == "owner_report"  # default provenance for manual entry
+    conn.execute.assert_awaited_once()
+    mock_audit.assert_awaited_once()
+    assert mock_audit.call_args.kwargs["operation"] == "update"
+    assert mock_audit.call_args.kwargs["actor"] == "founder_retool"

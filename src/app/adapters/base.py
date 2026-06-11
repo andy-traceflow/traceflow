@@ -11,6 +11,7 @@ adapter — they are stable across providers and live in services/.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any, Protocol, runtime_checkable
 
 from app.models.client_config import ClientConfig
@@ -63,5 +64,23 @@ class CRMAdapter(Protocol):
 
         Implementations MUST enforce their own short timeout (~2s): a slow CRM
         must never delay the missed-call SMS past its <30s target.
+        """
+        ...
+
+    async def fetch_recovered_value(
+        self,
+        external_id: str,
+        config: ClientConfig,
+    ) -> Decimal | None:
+        """Best-effort: the booked revenue the CRM has recorded for this contact.
+
+        Returns the contact's confirmed booked dollars (e.g. HubSpot
+        total_revenue / the sum of closed-won deals), or None if unsupported,
+        not yet booked, not found, or on error. Like lookup_by_phone, callers
+        MUST treat None as 'no confirmed value yet', never a hard failure.
+
+        Runs in the background revenue_sync job, not on the hot path, but
+        implementations SHOULD still enforce a short timeout so the job stays
+        bounded across many leads.
         """
         ...

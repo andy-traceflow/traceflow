@@ -20,6 +20,7 @@ The adapter holds no state — safe as a shared registry singleton.
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -163,6 +164,19 @@ class GoHighLevelAdapter:
         if match is None:
             return None
         return self._to_crm_contact(match)
+
+    async def fetch_recovered_value(
+        self,
+        external_id: str,
+        config: ClientConfig,
+    ) -> Decimal | None:
+        """Not yet implemented for GHL — recovered revenue for GHL clients is
+        captured via owner_report (the admin outcome endpoint) until a GHL
+        client needs auto-sync. Returning None keeps revenue_sync a clean no-op
+        for this provider (never a hard failure). TODO: sum won opportunities
+        for the contact (GET /opportunities/search?contact_id=...).
+        """
+        return None
 
     # ------------------------------------------------------------------
     # Internals — phone lookup

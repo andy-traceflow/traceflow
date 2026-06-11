@@ -13,16 +13,18 @@ registered adapter) live here.
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from app.adapters.registry import get_adapter
 from app.db import get_service_connection
 from app.middleware.auth import verify_admin_token
 from app.models.client_config import ClientConfig
-from app.models.lead import Lead
+from app.models.lead import Lead, LeadOutcome, OutcomeSource
 from app.services.audit import record_audit_event
 
 logger = logging.getLogger(__name__)
@@ -115,6 +117,77 @@ async def repush_lead(lead_id: UUID) -> dict[str, Any]:
         "provider": config.crm_provider,
         "action": action,
         "external_id": new_external_id,
+    }
+
+
+class LeadOutcomeIn(BaseModel):
+    outcome: LeadOutcome
+    recovered_value: Decimal | None = None
+    source: OutcomeSource = OutcomeSource.owner_report
+
+
+@router.post("/leads/{lead_id}/outcome")
+async def record_lead_outcome(lead_id: UUID, body: LeadOutcomeIn) -> dict[str, Any]:
+    """Record a lead's booked outcome + recovered revenue (owner report).
+
+    The universal capture path — works for every client, CRM or not. It writes
+    the same columns the revenue_sync CRM readback does, but with
+    outcome_source='owner_report' by default: the founder records it from Retool
+    (e.g. after the monthly review), or it's pulled in from a client's reply.
+    A 'won' outcome must carry a recovered_value.
+    """
+    if body.outcome == LeadOutcome.won and body.recovered_value is None:
+        raise HTTPException(
+            status_code=400, detail="recovered_value is required when outcome is 'won'"
+        )
+
+    async with get_service_connection() as conn:
+        row = await conn.fetchrow("SELECT client_id FROM leads WHERE id = $1", lead_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Lead {lead_id} not found")
+        client_id = row["client_id"]
+        await conn.execute(
+            """
+            UPDATE leads
+            SET outcome = $1, recovered_value = $2, outcome_source = $3,
+                outcome_recorded_at = NOW()
+            WHERE id = $4
+            """,
+            body.outcome.value,
+            body.recovered_value,
+            body.source.value,
+            lead_id,
+        )
+
+    recovered_str = str(body.recovered_value) if body.recovered_value is not None else None
+    await record_audit_event(
+        client_id=client_id,
+        operation="update",
+        actor="founder_retool",
+        target_table="leads",
+        target_id=str(lead_id),
+        snapshot={
+            "outcome": body.outcome.value,
+            "recovered_value": recovered_str,
+            "source": body.source.value,
+        },
+    )
+
+    logger.info(
+        "admin lead outcome recorded",
+        extra={
+            "lead_id": str(lead_id),
+            "client_id": str(client_id),
+            "outcome": body.outcome.value,
+            "source": body.source.value,
+        },
+    )
+    return {
+        "lead_id": str(lead_id),
+        "client_id": str(client_id),
+        "outcome": body.outcome.value,
+        "recovered_value": recovered_str,
+        "source": body.source.value,
     }
 
 

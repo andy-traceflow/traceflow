@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -158,6 +159,19 @@ class MondayAdapter:
         except Exception as e:
             logger.warning("monday lookup_by_phone failed/timed out", exc_info=e)
             return None
+
+    async def fetch_recovered_value(
+        self,
+        external_id: str,
+        config: ClientConfig,
+    ) -> Decimal | None:
+        """Not yet implemented for Monday — a project board has no native
+        revenue concept. Recovered revenue for Monday clients is captured via
+        owner_report (the admin outcome endpoint). Returning None keeps
+        revenue_sync a clean no-op for this provider. TODO: read a mapped value
+        column off the item.
+        """
+        return None
 
     async def _lookup_impl(self, phone: str, config: ClientConfig) -> CRMContact | None:
         try:

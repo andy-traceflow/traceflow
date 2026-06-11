@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from app.adapters.base import CRMAdapter
 from app.adapters.ghl import GoHighLevelAdapter
+from app.adapters.hubspot import HubSpotAdapter
 from app.adapters.monday import MondayAdapter
 
 _REGISTRY: dict[str, CRMAdapter] = {
     "ghl": GoHighLevelAdapter(),
+    "hubspot": HubSpotAdapter(),
     "monday": MondayAdapter(),
 }
 
