@@ -6,6 +6,33 @@
 
 ---
 
+## 2026-06-10 — Self-hosted admin surface (/api/admin + /admin SPA) replaces the Retool plan
+
+### decision: build the admin tool in-repo, not Retool (ADR-0004)
+- The Phase-2 "Retool admin" plan is superseded: the founder admin surface is now `/api/admin/*` in the existing FastAPI service plus a thin React SPA served at `/admin` from the same origin. Rationale (full tradeoff in the ADR): retool-notes.md had already logged connector friction + silently-failing queries; per-panel SQL would duplicate the isolation discipline outside CI; and the lifecycle-v2 config surface (classification toggles, vendor allowlist, alert contact) deserves a tested editor, not hand-SQL. retool-notes.md banner'd as superseded; architecture.md deferral list updated.
+
+### build: admin auth — `admin_users` + login-issued JWTs (migration 017, the only schema change)
+- `admin_users` (bcrypt password_hash, role CHECK as the RBAC hook, `is_active` kill switch; ENABLE+FORCE RLS with NO policies → service-role only). Seed/reset via `scripts/create_admin.py` (ON CONFLICT = password-reset path). `POST /api/admin/login` → 12h HS256 JWT (existing `ADMIN_JWT_SECRET`): rate-limited 5 failures/15min/IP (in-memory sliding window, success resets), timing-equalized unknown-email path, enumeration-safe generic 401s. `require_admin_user` (new `services/admin_auth.py`) gates every other route at the ROUTER level and re-loads the admin row per request (`is_active` = instant revocation). bcrypt used directly (passlib is unmaintained + crashes with bcrypt≥4.1).
+- **BREAKING:** the static-secret bearer (`verify_admin_token`) is deleted — `ADMIN_JWT_SECRET` is no longer a valid token, only the JWT signer. Audit actor is now the admin's email + id (was hardcoded `'founder_retool'`).
+
+### build: the admin API (18 routes, `routers/admin/` package)
+- Clients/switcher; config GET/PUT (partial update via `exclude_unset`, typo'd fields 422 via `extra="forbid"`, `timezone` routes to `clients`, classification block always written in full, secrets read-redacted as `has_crm_credentials`/`webhook_integrations` and structurally unwritable); leads list (default `classification=potential_lead`, `all` sentinel, `include_test=false`) / detail (intent joined from the latest `intent_classified` event — there is no `leads.intent` column) / conversation; repush + outcome (ported from the old flat paths to client-scoped paths, ADR-0003 semantics intact); mark-test; field-mappings GET/PUT(upsert)/DELETE (audit snapshot keeps the deleted row); ai-usage GET + reset; routing-activity breakdown + routing-log (events stream: `twilio_missed_call_received` / `missed_call_during_active_conversation` / `greeting_suppressed`) — the metrics-integrity view behind the 25%+ recovery guarantee.
+- **Isolation invariant** (RLS is bypassed on the service connection): every statement filters by the path `client_id`; cross-client lead ids are indistinguishable 404s. A gate-sweep test iterates every `/api/admin` route asserting 401 token-less, so future routes are auto-covered.
+
+### build: minimal admin SPA (`admin-ui/`, Vite+React+TS+Tailwind)
+- Login → shell (client switcher) → panels: Leads (table + drawer with conversation, repush / mark-test / record-outcome), Activity (routing breakdown + log), Config (all lifecycle-v2 toggles + messaging/VIP/notifications/ops), Mappings (CRUD), Usage (reset). Built bundle committed to `src/app/static/admin/`, conditionally mounted by main.py — same-origin API, Render build stays pip-only. Token in sessionStorage; any 401 clears it and bounces to login. `scripts/dev_admin_preview.py` runs the real app over canned in-memory rows for UI work without a DB (login dev@traceflow.app / preview); verified end-to-end in-browser: bad-creds error, login, drawer, config save round-trip, activity stats, tamper-bounce — zero console errors.
+
+### tests
+- `tests/services/test_admin_auth.py` (17) + `tests/test_admin.py` rewritten (38: gate sweep, login matrix incl. 429, redaction, partial-update SQL assertions, isolation 404s, repush/outcome parity ports). Full offline suite **370 passed / 40 skipped**, ruff clean.
+
+### deploy runbook (when this branch merges)
+1. `python scripts/apply_migrations.py` (applies 017) — or paste into Supabase SQL editor.
+2. `python scripts/create_admin.py --email andy@traceflow.app --name "Andy"` with prod `SUPABASE_DB_URL`.
+3. Confirm `ADMIN_JWT_SECRET` in Render is ≥32 random bytes (rotate if it was ever used as a bearer token).
+4. Admin lives at `https://<api-host>/admin`. Old bare-secret calls fail immediately — expected.
+
+---
+
 ## 2026-06-10 — Monthly performance report + GHL revenue readback
 
 ### build: `monthly_performance_report` job (`jobs/monthly_report.py`) — the case-study number now has a delivery vehicle

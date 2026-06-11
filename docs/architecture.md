@@ -473,7 +473,7 @@ The pattern is always: **what variability exists across clients in this dimensio
 Premature complexity kills momentum. The following are explicitly deferred:
 
 - **Client-facing UI** — until Client 8 minimum. Email digests + Loom walkthroughs suffice in Phase 0–1.
-- **Internal admin UI** — until Client 3 and you've felt the SQL pain. Then Retool, not custom.
+- ~~**Internal admin UI** — until Client 3 and you've felt the SQL pain. Then Retool, not custom.~~ **Built 2026-06-10, self-hosted instead of Retool (ADR-0004):** `/api/admin/*` + a thin React SPA at `/admin`, inside the existing service. Auth = `admin_users` (bcrypt) → 12h HS256 JWT via `POST /api/admin/login`; every route gated by `require_admin_user`; every write audit-logged with the admin's email. Admin queries use the service-role connection (BYPASSRLS) — isolation there is the **explicit `client_id` filter from the URL path in every statement**, enforced by tests, never by RLS. Secrets (`crm_credentials`, webhook signing) are read-redacted and not writable from the UI.
 - **Multi-region deployment** — until performance demands it (you won't hit this in Year 1).
 - **Microservices** — never speak of this.
 - **Custom email infrastructure** — Resend or Postmark covers it.

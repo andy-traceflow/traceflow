@@ -1,11 +1,13 @@
-"""JWT verification for admin and client-portal endpoints.
+"""JWT verification for client-portal endpoints (Supabase-issued tokens).
 
 Supabase signs auth tokens with asymmetric keys (ES256 by default,
 sometimes RS256). The public keys are published at the project's JWKS
 endpoint; PyJWKClient caches them for an hour.
 
-For platform-internal admin endpoints (founder-only), use an HS256 token
-signed with ADMIN_JWT_SECRET — separate code path, separate auth scope.
+Platform-internal admin auth (the /api/admin surface) is a separate world:
+admin_users accounts + login-issued HS256 tokens, implemented in
+app/services/admin_auth.py (ADR-0004). The old static-secret bearer
+(verify_admin_token) was retired with it.
 
 All permission-checking dependencies are async so the underlying DB
 lookups don't need to bridge sync→async at every call site.
@@ -13,7 +15,6 @@ lookups don't need to bridge sync→async at every call site.
 
 from __future__ import annotations
 
-import hmac
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -110,35 +111,3 @@ async def require_admin(user: AuthUser = Depends(verify_jwt)) -> AuthUser:
             detail="Admin access required",
         )
     return user
-
-
-def verify_admin_token(
-    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-) -> None:
-    """Verify a founder-only admin token (HS256 against ADMIN_JWT_SECRET).
-
-    Separate scope from the Supabase-JWT path: used for platform-internal
-    admin endpoints (Retool admin tool, ops scripts, manual curl).
-
-    Accepts either:
-      - The bare ADMIN_JWT_SECRET as a static bearer token — simplest
-        for a single-admin use case; rotate the secret to revoke.
-      - An HS256 JWT signed with the secret — rotatable per-token via
-        the standard exp claim.
-    """
-    settings = get_settings()
-    if not settings.admin_jwt_secret:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Admin auth not configured (ADMIN_JWT_SECRET unset)",
-        )
-    token = creds.credentials
-    # Constant-time compare for the static-token path.
-    if hmac.compare_digest(token, settings.admin_jwt_secret):
-        return
-    try:
-        jwt.decode(token, settings.admin_jwt_secret, algorithms=["HS256"])
-    except jwt.ExpiredSignatureError as e:
-        raise HTTPException(status_code=401, detail="Admin token expired") from e
-    except jwt.InvalidTokenError as e:
-        raise HTTPException(status_code=401, detail="Invalid admin token") from e

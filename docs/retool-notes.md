@@ -1,5 +1,11 @@
 # Retool Admin Notes
 
+> **SUPERSEDED 2026-06-10** by the self-hosted admin surface — see
+> [ADR-0004](decisions/0004-self-hosted-admin-api.md). The admin tool is now
+> `/api/admin/*` + the SPA at `/admin` in this repo; Retool was never stood up.
+> Kept for history: the client-switcher convention and the explicit-`client_id`
+> query discipline below carried straight into the new design.
+
 Operational notes for the founder-only Retool admin app — the
 "monitoring layer" that gives the LLR pipeline visibility before
 Client 1 goes live. Companion to the Retool Admin UI panel spec.

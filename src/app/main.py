@@ -10,10 +10,12 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from jwt.algorithms import get_default_algorithms
 
 from app.config import get_settings
@@ -75,6 +77,16 @@ app.include_router(calculator.router)
 
 # Founder-only admin — cross-tenant, bypasses RLS, separate auth scope
 app.include_router(admin.router)
+
+# Admin SPA (admin-ui/, built into src/app/static/admin). Static files are
+# public by design — the SPA renders its login screen until /api/admin/login
+# succeeds; all data sits behind the admin JWT. Mounted conditionally so dev
+# checkouts and CI without a built bundle still import cleanly.
+_ADMIN_UI_DIR = Path(__file__).parent / "static" / "admin"
+if _ADMIN_UI_DIR.is_dir():
+    app.mount("/admin", StaticFiles(directory=_ADMIN_UI_DIR, html=True), name="admin-ui")
+else:  # pragma: no cover - depends on whether the bundle was built
+    logger.info("admin SPA bundle not found at %s — /admin not mounted", _ADMIN_UI_DIR)
 
 
 @app.get("/")

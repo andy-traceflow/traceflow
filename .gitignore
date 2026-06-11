@@ -45,3 +45,6 @@ Thumbs.db
 # Local notebooks / scratch
 notebooks/
 scratch/
+
+# admin SPA toolchain (built bundle in src/app/static/admin IS committed)
+admin-ui/node_modules/

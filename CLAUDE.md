@@ -147,7 +147,7 @@ When unsure which skill to load, default to skim-reading the index in each, then
 | `docs/architecture.md` | System architecture deep-dive (extracted from PRD §7) |
 | `docs/workflow-schema.md` | Full lifecycle workflow as structured schema (sales, onboarding, delivery, retention) |
 | `docs/CHANGELOG.md` | Running log of decisions, builds, milestones — append-only |
-| `docs/decisions/` | Architecture Decision Records (ADRs). Each major technical decision gets its own file |
+| `docs/decisions/` | Architecture Decision Records (ADRs). 0001 multi-tenant RLS · 0003 recovered-revenue attribution · 0004 self-hosted admin (replaces Retool) |
 | `docs/playbooks/` | Operational playbooks: discovery scripts, outreach templates, onboarding checklists |
 
 ---
