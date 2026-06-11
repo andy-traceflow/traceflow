@@ -144,7 +144,7 @@ export default function ConfigPanel({ clientId }: { clientId: string }) {
                 type="checkbox"
                 checked={cls[key] as boolean}
                 onChange={(e) => setCls({ [key]: e.target.checked })}
-                className="mt-0.5 accent-[#ff6a00]"
+                className="mt-0.5 accent-[#3b82f6]"
               />
               <span>
                 <span className="block text-sm text-zinc-200">{label}</span>

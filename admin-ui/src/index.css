@@ -1,12 +1,12 @@
 @import "tailwindcss";
 
 @theme {
-  --color-signal: #ff6a00; /* landing's signal orange */
+  --color-signal: #3b82f6; /* signal blue — brighter step of the landing's #2563eb for dark surfaces */
   --font-mono:
     "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 ::selection {
-  background: #ff6a00;
+  background: #3b82f6;
   color: #09090b;
 }

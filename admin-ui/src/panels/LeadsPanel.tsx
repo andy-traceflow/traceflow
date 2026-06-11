@@ -54,7 +54,7 @@ export default function LeadsPanel({ clientId }: { clientId: string }) {
             type="checkbox"
             checked={includeTest}
             onChange={(e) => setIncludeTest(e.target.checked)}
-            className="accent-[#ff6a00]"
+            className="accent-[#3b82f6]"
           />
           include test leads
         </label>
