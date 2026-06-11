@@ -407,23 +407,29 @@ cadences:
     frequency: daily
     activities:
       - For clients with revenue_config.mode='crm', read each pushed lead's booked
-        value back from the CRM (adapter.fetch_recovered_value — HubSpot total_revenue)
-        within attribution_window_days and freeze it onto leads.recovered_value /
-        outcome='won' (outcome_source='crm'). Snapshot-bounded so a later second job
-        never inflates the figure attributed to the original missed call.
+        value back from the CRM (adapter.fetch_recovered_value — HubSpot total_revenue;
+        GHL sum of won opportunities) within attribution_window_days and freeze it
+        onto leads.recovered_value / outcome='won' (outcome_source='crm').
+        Snapshot-bounded so a later second job never inflates the figure attributed
+        to the original missed call. Monday still returns None (owner-report fallback).
       - Clients with no CRM (or mode != 'crm') capture recovered_value via the admin
         outcome endpoint (POST /api/admin/leads/{id}/outcome, outcome_source='owner_report').
     output: confirmed_recovered_revenue
 
-  - id: monthly_performance_report      # NOT yet built — data plumbing (outcome/recovered_value) now exists
+  - id: monthly_performance_report      # IMPLEMENTED in jobs/monthly_report.py
     frequency: monthly
-    delivery_by: 5th of month
+    delivery_by: 5th of month           # hourly cron days 1-5, gated to each client's local 09:00; failed day retries next
     activities:
-      - Auto-generate per-client report from leads/events tables
-      - Metrics: leads captured, conversion %, recovered revenue (actuals from
-        leads.recovered_value, labeled by outcome_source — never blended with the
-        budget-bucket estimate), hours saved
-      - Send via email with branded template
+      - Auto-generate per-client report from leads/events tables for the previous
+        local calendar month; idempotent per period via monthly_report_sent event
+        (payload.period = 'YYYY-MM')
+      - Metrics: leads captured, recovery %, qualified + conversion %, CONFIRMED
+        recovered revenue (actuals from leads.recovered_value, labeled by
+        outcome_source — never blended with the budget-bucket estimate), estimated
+        pipeline (explicitly labeled), program-to-date confirmed total, ROI multiple
+        vs revenue_config.monthly_fee (omitted when fee unset), hours-saved estimate
+      - Send via email (Resend); skip dead months; no event recorded on send
+        failure so the next cron hour retries
     output: client_performance_report
     
   - id: quarterly_review_call

@@ -53,6 +53,19 @@ services:
         value: "3.12"
       - fromGroup: traceflow-secrets
 
+  - type: cron
+    name: monthly-report
+    runtime: python
+    schedule: "0 * 1-5 * *"  # hourly on the 1st-5th; each client gated to its local 09:00, sent once per month
+    buildCommand: pip install -e .
+    startCommand: python -m app.jobs.monthly_report
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: PYTHON_VERSION
+        value: "3.12"
+      - fromGroup: traceflow-secrets
+
 envVarGroups:
   - name: traceflow-secrets
     envVars:

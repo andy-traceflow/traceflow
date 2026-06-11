@@ -57,8 +57,10 @@ GENUINE = "potential_lead"
 # A genuine lead has "recovered" the moment the caller texted back — i.e. it
 # left the greeted-but-silent state. ``duplicate`` is a creation-time dedupe
 # artifact, not an engagement, so it never counts as recovered.
-_NON_RECOVERED = frozenset({"unqualified", "duplicate"})
-_QUALIFIED = frozenset({"qualified", "high_value"})
+# Public: the monthly report (jobs/monthly_report.py) shares these semantics —
+# one definition of replied/qualified, never two.
+NON_RECOVERED_STATUSES = frozenset({"unqualified", "duplicate"})
+QUALIFIED_STATUSES = frozenset({"qualified", "high_value"})
 _PENDING = frozenset({"unqualified", "qualifying", "needs_review"})
 
 # Coarse $ midpoints per budget bucket — a directional pipeline estimate, not
@@ -150,9 +152,9 @@ def compute_metrics(rows: Iterable[Mapping[str, Any]]) -> DigestMetrics:
         if classification == GENUINE:
             captured += 1
             status = row["qualification_status"]
-            if status not in _NON_RECOVERED:
+            if status not in NON_RECOVERED_STATUSES:
                 replied += 1
-            if status in _QUALIFIED:
+            if status in QUALIFIED_STATUSES:
                 qualified += 1
             if status in _PENDING:
                 pending += 1

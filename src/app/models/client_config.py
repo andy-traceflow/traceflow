@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
@@ -127,3 +128,17 @@ class ClientConfig(BaseModel):
             return int(self.revenue_config.get("attribution_window_days", 90))
         except (TypeError, ValueError):
             return 90
+
+    @property
+    def monthly_fee(self) -> Decimal | None:
+        """Monthly retainer in dollars (revenue_config.monthly_fee) — powers the
+        monthly report's ROI multiple (PRD §13: recovered revenue / monthly fee).
+        None when unset or unparseable; the ROI line is simply omitted."""
+        raw = self.revenue_config.get("monthly_fee")
+        if raw in (None, ""):
+            return None
+        try:
+            value = Decimal(str(raw))
+        except (InvalidOperation, ValueError):
+            return None
+        return value if value > 0 else None

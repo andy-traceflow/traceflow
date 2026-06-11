@@ -6,6 +6,25 @@
 
 ---
 
+## 2026-06-10 — Monthly performance report + GHL revenue readback
+
+### build: `monthly_performance_report` job (`jobs/monthly_report.py`) — the case-study number now has a delivery vehicle
+- Emails each client's owner the previous local calendar month by the 5th (workflow-schema `monthly_performance_report`): captured / recovery % / qualified + conversion %, **confirmed recovered revenue** (actuals from `leads.recovered_value`, hero figure, split CRM-confirmed vs owner-reported), estimated pipeline (explicitly labeled, never blended — ADR-0003 provenance rule), **program-to-date confirmed total** (the case-study figure; anchored on `created_at < period end` so late CRM confirmations of a prior month's lead surface in the next report), booked-jobs table, ROI multiple vs the monthly retainer, and an hours-saved estimate (conservative per-unit minutes, labeled estimate).
+- Scheduling mirrors the digest's pattern: hourly Render cron on days 1–5 (`monthly-report` in render.yaml), each client gated to its local 09:00 — "by the 5th" with four built-in retries. Idempotent per period via a `monthly_report_sent` event keyed `payload->>'period' = 'YYYY-MM'`; a failed send records nothing so the next hour retries. Zero AI/Twilio spend → runs fully in Phase 0; dead months are skipped.
+- **ROI needs a fee:** new `revenue_config.monthly_fee` key (JSONB — no migration) surfaced as `ClientConfig.monthly_fee`; the ROI line (PRD §13: recovered ÷ retainer, target ≥10x) renders only when set and only against *confirmed* dollars — an ROI over an estimate would violate the provenance rule.
+- Shared lead semantics (`GENUINE`, replied/qualified status sets, `BUDGET_MIDPOINTS`) imported from `daily_digest` — promoted `_QUALIFIED`/`_NON_RECOVERED` to public `QUALIFIED_STATUSES`/`NON_RECOVERED_STATUSES` rather than duplicating the definitions (one source of truth).
+
+### build: GHL `fetch_recovered_value` (`adapters/ghl.py`) — the default/affiliate CRM joins auto-readback
+- Sums the contact's **won opportunities** (`GET /opportunities/search`, snake_case params — confirm the quirk when the first `mode='crm'` GHL client onboards) — GHL has no HubSpot-style `total_revenue` rollup, so the won-opportunity sum is the ADR-0003 attribution unit. Same best-effort contract: None on missing creds / no won opps / any error; server-side `status=won` filter plus a client-side guard. GHL clients can now run `revenue_config.mode='crm'`; Monday remains owner-report-only.
+
+### tests
+- `tests/jobs/test_monthly_report.py` (23: provenance rule, period boundaries + January rollover, delivery gate, ROI/hours math, rendering + escaping, idempotency, retry-on-send-failure, failure isolation) + `tests/adapters/test_ghl_adapter.py` (+5). Full offline suite **330 passed / 40 skipped**, ruff clean.
+
+### note: still on branch `feat/caller-classification-runtime`
+- No new migration (016 remains the head; `monthly_fee` rides the existing `revenue_config` JSONB). Go-live steps unchanged: merge branch, deploy, set `ANTHROPIC_API_KEY` (+ `RESEND_API_KEY` for the digest/report emails to actually send).
+
+---
+
 ## 2026-06-07 — Recovered-revenue capture (outcome model + owner-report + HubSpot readback)
 
 ### build: booked-outcome axis on the lead (migration 016)

@@ -20,7 +20,7 @@ The adapter holds no state — safe as a shared registry singleton.
 from __future__ import annotations
 
 import logging
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
@@ -40,6 +40,9 @@ DEFAULT_TIMEOUT = 30.0
 # Phone lookup runs on the missed-call hot path and must never delay the
 # greeting SMS — a tight timeout caps it well under the 30s default.
 LOOKUP_TIMEOUT = 2.0
+# Revenue readback runs in the background revenue_sync job; bounded so a stalled
+# CRM can't hang a sweep across many leads.
+READBACK_TIMEOUT = 10.0
 # Tag substrings that mark a GHL contact as a vendor/partner rather than a
 # customer or lead. The authoritative vendor signal is the per-client
 # vendor_allowlist (phone-based); this is a secondary, tag-based hint.
@@ -170,13 +173,58 @@ class GoHighLevelAdapter:
         external_id: str,
         config: ClientConfig,
     ) -> Decimal | None:
-        """Not yet implemented for GHL — recovered revenue for GHL clients is
-        captured via owner_report (the admin outcome endpoint) until a GHL
-        client needs auto-sync. Returning None keeps revenue_sync a clean no-op
-        for this provider (never a hard failure). TODO: sum won opportunities
-        for the contact (GET /opportunities/search?contact_id=...).
+        """Sum the contact's won opportunities — GHL's equivalent of HubSpot's
+        total_revenue rollup (ADR-0003 attribution unit: contact total spent).
+
+        Best-effort: None on missing creds, unknown contact, no won
+        opportunities yet, or any error — revenue_sync treats None as 'nothing
+        confirmed yet', never a hard failure, and a non-positive total never
+        overwrites a stored value.
         """
-        return None
+        try:
+            creds = self._creds(config)
+        except ValueError:
+            return None
+
+        # Unlike the contacts endpoints (camelCase locationId), GHL's
+        # opportunity search takes snake_case params — an API quirk to confirm
+        # against the client's GHL when the first mode='crm' GHL client
+        # onboards. status='won' filters server-side; the loop below guards
+        # client-side anyway in case the param is ignored. Default page size
+        # (20) is plenty for one contact's won opportunities.
+        result = await self._request(
+            api_key=creds["api_key"],
+            method="GET",
+            path="/opportunities/search",
+            params={
+                "location_id": str(creds["location_id"]),
+                "contact_id": external_id,
+                "status": "won",
+            },
+            request_timeout=READBACK_TIMEOUT,
+        )
+        if not result:
+            return None
+
+        total = Decimal("0")
+        for opportunity in result.get("opportunities") or []:
+            if str(opportunity.get("status") or "").lower() != "won":
+                continue
+            value = self._parse_money(opportunity.get("monetaryValue"))
+            if value is not None:
+                total += value
+        return total if total > 0 else None
+
+    @staticmethod
+    def _parse_money(raw: Any) -> Decimal | None:
+        """Coerce a GHL money value to a positive Decimal, else None."""
+        if raw in (None, ""):
+            return None
+        try:
+            value = Decimal(str(raw))
+        except (InvalidOperation, ValueError):
+            return None
+        return value if value > 0 else None
 
     # ------------------------------------------------------------------
     # Internals — phone lookup

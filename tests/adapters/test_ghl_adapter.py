@@ -8,6 +8,7 @@ The HTTP layer is mocked so the suite runs offline and deterministically.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -308,3 +309,69 @@ async def test_lookup_by_phone_rejects_fuzzy_nonmatch():
         return_value={"contacts": [{"id": "x1", "phone": "+19998887777", "type": "customer"}]}
     )
     assert await adapter.lookup_by_phone("+15551234567", _make_config(uuid4())) is None
+
+
+# ---------------------------------------------------------------------------
+# fetch_recovered_value — confirmed recovered-revenue readback
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fetch_recovered_value_sums_won_opportunities():
+    adapter = GoHighLevelAdapter()
+    adapter._request = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "opportunities": [
+                {"id": "o1", "status": "won", "monetaryValue": "4500.00"},
+                {"id": "o2", "status": "won", "monetaryValue": 1500},
+                {"id": "o3", "status": "open", "monetaryValue": "9999"},  # not booked
+                {"id": "o4", "status": "lost", "monetaryValue": "1234"},
+                {"id": "o5", "status": "won", "monetaryValue": None},  # no value set
+            ]
+        }
+    )
+    value = await adapter.fetch_recovered_value("c1", _make_config(uuid4()))
+    assert value == Decimal("6000.00")
+    # the search is scoped to the contact and asks for won server-side too
+    params = adapter._request.await_args.kwargs["params"]
+    assert params["contact_id"] == "c1"
+    assert params["location_id"] == "loc-123"
+    assert params["status"] == "won"
+
+
+@pytest.mark.asyncio
+async def test_fetch_recovered_value_none_when_nothing_won():
+    adapter = GoHighLevelAdapter()
+    adapter._request = AsyncMock(  # type: ignore[method-assign]
+        return_value={"opportunities": [{"id": "o1", "status": "open", "monetaryValue": "500"}]}
+    )
+    assert await adapter.fetch_recovered_value("c1", _make_config(uuid4())) is None
+
+    adapter._request = AsyncMock(return_value={"opportunities": []})  # type: ignore[method-assign]
+    assert await adapter.fetch_recovered_value("c1", _make_config(uuid4())) is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_recovered_value_none_without_creds():
+    adapter = GoHighLevelAdapter()
+    config = ClientConfig(
+        client_id=uuid4(),
+        crm_credentials={},
+        ai_period_resets_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    assert await adapter.fetch_recovered_value("c1", config) is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_recovered_value_none_on_request_failure():
+    adapter = GoHighLevelAdapter()
+    adapter._request = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    assert await adapter.fetch_recovered_value("c1", _make_config(uuid4())) is None
+
+
+def test_ghl_parse_money_rejects_garbage():
+    assert GoHighLevelAdapter._parse_money("not-a-number") is None
+    assert GoHighLevelAdapter._parse_money(None) is None
+    assert GoHighLevelAdapter._parse_money("") is None
+    assert GoHighLevelAdapter._parse_money(0) is None
+    assert GoHighLevelAdapter._parse_money("1200.50") == Decimal("1200.50")
