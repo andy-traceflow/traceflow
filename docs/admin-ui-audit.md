@@ -69,6 +69,14 @@ Check items off as they land.
 - [ ] Optional: stress-test the heavy uppercase-mono aesthetic. → `/critique`. **(SKIPPED — aesthetic is intentional; revisit only if desired.)**
 - [x] Final spacing/alignment/consistency pass — addressed via tap-target + token + transition work.
 
+## Deploy / caching
+
+- **Atomic-deploy cache headers (2026-06-17):** `main.py`'s `_AdminStaticFiles`
+  serves `index.html` with `Cache-Control: no-cache` (always revalidate) and the
+  hash-named `assets/*` with `public, max-age=31536000, immutable`. Fixes the
+  stale-shell symptom (returning visitors not seeing a new deploy without a hard
+  refresh) while keeping assets cached. Separator-robust for Windows dev.
+
 ## Keep (don't regress)
 
 Distinctive non-AI aesthetic · primary/ghost/text button hierarchy · teaching

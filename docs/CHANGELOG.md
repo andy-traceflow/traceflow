@@ -6,6 +6,26 @@
 
 ---
 
+## 2026-06-17 — Admin live in prod + production-grade UI pass (audit Phases 1–4) + atomic-deploy caching
+
+### milestone: the self-hosted admin is deployed and live
+- `feat/caller-classification-runtime` merged to `main` and deployed (Render `traceflow-api`). Migration 017 applied to prod; founder admin seeded (`andy@traceflow.app`). Live at `traceflow-api-8f3o.onrender.com/admin`. Custom domain deferred — DNS is at **Namecheap** (no Cloudflare account); the apex serves the landing site, so `traceflow.app/admin` needs either a subdomain (`app.` → the API service + a CNAME) or a nameserver migration. Using the onrender URL for now.
+
+### build: production-grade UI pass — `docs/admin-ui-audit.md` (anti-pattern verdict PASS)
+- **Phase 1 — accessibility (c64c821):** keyboard-operable lead rows, `focus-visible` rings + base outline, ARIA tablist/tabpanel with arrow-key nav, real `role="dialog"` drawer (focus-in / Esc / focus-restore), labeled selects, `<h1>`, WCAG-AA contrast (zinc-500/600 → 400), `role="alert"`/`status` live regions.
+- **Phase 2 — design tokens (6167dfa):** `index.css @theme` defines brand / semantic (`success`/`warning`/`danger`) / neutral (`surface`/`surface-raised`/`border`/`border-strong`) tokens; every inline emerald/amber/red + zinc surface migrated; tiny `[10px]/[11px]` text → `text-xs`; `accent-signal`.
+- **Phase 3 — responsive:** Leads table → stacked keyboard-operable cards under `sm`; larger tap targets; mappings form grid gated md/lg. Dense Activity/Mappings tables intentionally keep horizontal scroll.
+- **Phase 4 — motion:** drawer slide-in + backdrop fade (CSS keyframes), base color/focus transitions, `prefers-reduced-motion` honored, usage bar via `transform: scaleX`.
+- Verified in `dev_admin_preview.py` at desktop + 375px (mobile cards, drawer animation + focus, scaleX bar), zero console errors. Deferred (optional): styled `confirm()`; `/critique` of the uppercase-mono aesthetic.
+
+### build: atomic-deploy cache headers for the admin SPA
+- `_AdminStaticFiles` (`main.py`) sets `Cache-Control: no-cache` on index.html (always revalidate) and `public, max-age=31536000, immutable` on hash-named `assets/*`. Default `StaticFiles` sent no `Cache-Control`, so browsers heuristically cached the SPA shell and returning visitors loaded a stale build pointing at the previous deploy's (deleted) asset hashes — the "I see no changes after deploy" symptom. Separator-robust (Windows backslash vs Linux `/`); verified locally via the preview harness.
+
+### ops note (pre-client)
+- Render `traceflow-api` is **free tier** (≈50s cold starts); `render.yaml` cron jobs (digest / adapter-health / revenue-sync / monthly-report) are **not** deployed as services. Address both before onboarding client #1.
+
+---
+
 ## 2026-06-10 — Brand accent: signal orange → signal blue
 
 ### decision: recolor the accent across both surfaces
