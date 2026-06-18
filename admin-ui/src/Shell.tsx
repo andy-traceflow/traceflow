@@ -29,13 +29,14 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
   return (
     <div className="mx-auto min-h-screen max-w-6xl px-4 pb-16">
       <header className="flex flex-wrap items-center gap-3 border-b border-zinc-800 py-3">
-        <span className="font-mono text-xs uppercase tracking-[0.2em] text-signal">
+        <h1 className="font-mono text-xs uppercase tracking-[0.2em] text-signal">
           TraceFlow Admin
-        </span>
+        </h1>
         <select
+          aria-label="Active client"
           value={clientId ?? ""}
           onChange={(e) => setClientId(e.target.value || null)}
-          className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-sm outline-none focus:border-signal"
+          className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
         >
           {clients.length === 0 && <option value="">no clients</option>}
           {clients.map((c) => (
@@ -45,13 +46,13 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
           ))}
         </select>
         {selected && (
-          <span className="font-mono text-xs text-zinc-500">
+          <span className="font-mono text-xs text-zinc-400">
             {selected.tier} · {selected.crm_provider ?? "no CRM"} · {selected.leads_30d}{" "}
             leads/30d
           </span>
         )}
         <div className="ml-auto flex items-center gap-3">
-          <span className="font-mono text-xs text-zinc-500">{me.email}</span>
+          <span className="font-mono text-xs text-zinc-400">{me.email}</span>
           <button
             onClick={onLogout}
             className="rounded border border-zinc-800 px-2 py-1 font-mono text-xs text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
@@ -61,10 +62,30 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
         </div>
       </header>
 
-      <nav className="flex gap-1 py-3">
+      <nav
+        role="tablist"
+        aria-label="Admin sections"
+        className="flex gap-1 py-3"
+        onKeyDown={(e) => {
+          if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+          e.preventDefault();
+          const i = TABS.indexOf(tab);
+          const next =
+            e.key === "ArrowRight"
+              ? (i + 1) % TABS.length
+              : (i - 1 + TABS.length) % TABS.length;
+          setTab(TABS[next]);
+          e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+        }}
+      >
         {TABS.map((t) => (
           <button
             key={t}
+            role="tab"
+            id={`tab-${t}`}
+            aria-selected={tab === t}
+            aria-controls="tabpanel"
+            tabIndex={tab === t ? 0 : -1}
             onClick={() => setTab(t)}
             className={`rounded px-3 py-1.5 font-mono text-xs uppercase tracking-wider ${
               tab === t
@@ -78,17 +99,17 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
       </nav>
 
       {error && (
-        <p className="mb-4 rounded border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-400">
+        <p role="alert" className="mb-4 rounded border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-400">
           {error}
         </p>
       )}
 
       {!clientId ? (
-        <p className="py-12 text-center text-sm text-zinc-500">
+        <p className="py-12 text-center text-sm text-zinc-400">
           No client selected — provision clients via scripts/onboard_client.py.
         </p>
       ) : (
-        <main>
+        <main id="tabpanel" role="tabpanel" aria-labelledby={`tab-${tab}`}>
           {tab === "Leads" && <LeadsPanel clientId={clientId} />}
           {tab === "Activity" && <ActivityPanel clientId={clientId} />}
           {tab === "Config" && <ConfigPanel clientId={clientId} />}

@@ -61,24 +61,24 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
     <div className="space-y-4">
       <div className="flex items-center gap-3">
         <h2 className="text-lg font-semibold text-zinc-100">Field mappings</h2>
-        <span className="font-mono text-xs text-zinc-600">
+        <span className="font-mono text-xs text-zinc-400">
           canonical lead fields → the client's CRM/integration fields; edits apply on the
           next push
         </span>
       </div>
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
 
       {!mappings ? (
-        <p className="font-mono text-sm text-zinc-500">loading…</p>
+        <p className="font-mono text-sm text-zinc-400">loading…</p>
       ) : mappings.length === 0 ? (
-        <p className="text-sm text-zinc-500">
+        <p className="text-sm text-zinc-400">
           No mappings — zero-config defaults apply where the adapter has them (HubSpot
           standard properties); add explicit rows for custom fields.
         </p>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-zinc-800">
           <table className="w-full text-left text-sm">
-            <thead className="bg-zinc-900 font-mono text-xs uppercase tracking-wider text-zinc-500">
+            <thead className="bg-zinc-900 font-mono text-xs uppercase tracking-wider text-zinc-400">
               <tr>
                 <th className="px-3 py-2">Integration</th>
                 <th className="px-3 py-2">Canonical</th>
@@ -133,7 +133,7 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
             required
             value={draft.integration}
             onChange={(e) => setDraft({ ...draft, integration: e.target.value })}
-            className="w-full rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 font-mono text-xs outline-none focus:border-signal"
+            className="w-full rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           />
         </L>
         <L label="canonical field">
@@ -142,7 +142,7 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
             placeholder="sqft"
             value={draft.canonical_field}
             onChange={(e) => setDraft({ ...draft, canonical_field: e.target.value })}
-            className="w-full rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 font-mono text-xs outline-none focus:border-signal"
+            className="w-full rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           />
         </L>
         <L label="external field">
@@ -151,7 +151,7 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
             placeholder="cf_abc123"
             value={draft.external_field}
             onChange={(e) => setDraft({ ...draft, external_field: e.target.value })}
-            className="w-full rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 font-mono text-xs outline-none focus:border-signal"
+            className="w-full rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           />
         </L>
         <L label="type">
@@ -163,7 +163,7 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
                 external_field_type: e.target.value as FieldMapping["external_field_type"],
               })
             }
-            className="w-full rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 font-mono text-xs outline-none focus:border-signal"
+            className="w-full rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           >
             {FIELD_TYPES.map((t) => (
               <option key={t} value={t}>
@@ -187,7 +187,7 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
 function L({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+      <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-400">
         {label}
       </span>
       <div className="mt-1">{children}</div>

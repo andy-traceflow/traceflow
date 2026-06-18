@@ -35,7 +35,7 @@ export default function Login({ onLoggedIn }: { onLoggedIn: (me: AdminMe) => voi
           <h1 className="mt-1 text-xl font-semibold text-zinc-100">Admin console</h1>
         </div>
         <label className="block">
-          <span className="font-mono text-xs uppercase tracking-wider text-zinc-500">
+          <span className="font-mono text-xs uppercase tracking-wider text-zinc-400">
             Email
           </span>
           <input
@@ -45,11 +45,11 @@ export default function Login({ onLoggedIn }: { onLoggedIn: (me: AdminMe) => voi
             autoComplete="username"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="mt-1 w-full rounded border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-signal"
+            className="mt-1 w-full rounded border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           />
         </label>
         <label className="block">
-          <span className="font-mono text-xs uppercase tracking-wider text-zinc-500">
+          <span className="font-mono text-xs uppercase tracking-wider text-zinc-400">
             Password
           </span>
           <input
@@ -58,11 +58,11 @@ export default function Login({ onLoggedIn }: { onLoggedIn: (me: AdminMe) => voi
             autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="mt-1 w-full rounded border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-signal"
+            className="mt-1 w-full rounded border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           />
         </label>
         {error && (
-          <p className="rounded border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-400">
+          <p role="alert" className="rounded border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-400">
             {error}
           </p>
         )}

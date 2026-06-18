@@ -30,8 +30,8 @@ export default function UsageCard({ clientId }: { clientId: string }) {
     }
   }
 
-  if (error) return <p className="text-sm text-red-400">{error}</p>;
-  if (!usage) return <p className="font-mono text-sm text-zinc-500">loading…</p>;
+  if (error) return <p role="alert" className="text-sm text-red-400">{error}</p>;
+  if (!usage) return <p className="font-mono text-sm text-zinc-400">loading…</p>;
 
   const pct = Math.min(usage.percent_used, 100);
   const barTone =
@@ -44,12 +44,12 @@ export default function UsageCard({ clientId }: { clientId: string }) {
       </h2>
       <div className="mt-3 flex items-baseline gap-2">
         <span className="text-3xl font-bold text-zinc-100">{usage.used}</span>
-        <span className="font-mono text-sm text-zinc-500">/ {usage.cap} interactions</span>
+        <span className="font-mono text-sm text-zinc-400">/ {usage.cap} interactions</span>
       </div>
       <div className="mt-3 h-2 overflow-hidden rounded bg-zinc-800">
         <div className={`h-full ${barTone}`} style={{ width: `${pct}%` }} />
       </div>
-      <div className="mt-2 flex items-center justify-between font-mono text-xs text-zinc-500">
+      <div className="mt-2 flex items-center justify-between font-mono text-xs text-zinc-400">
         <span>{usage.percent_used.toFixed(1)}% used</span>
         <span>resets {new Date(usage.resets_at).toLocaleDateString()}</span>
       </div>
@@ -60,7 +60,7 @@ export default function UsageCard({ clientId }: { clientId: string }) {
       >
         {busy ? "Resetting…" : "Reset counter"}
       </button>
-      <p className="mt-2 text-xs text-zinc-600">
+      <p className="mt-2 text-xs text-zinc-400">
         Audit-logged. The cap itself is edited in Config → Operations.
       </p>
     </div>

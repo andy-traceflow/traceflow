@@ -38,9 +38,10 @@ export default function ActivityPanel({ clientId }: { clientId: string }) {
       <div className="flex items-center gap-3">
         <h2 className="text-lg font-semibold text-zinc-100">Routing activity</h2>
         <select
+          aria-label="Activity window"
           value={windowDays}
           onChange={(e) => setWindowDays(Number(e.target.value))}
-          className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 font-mono text-xs outline-none focus:border-signal"
+          className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
         >
           {[7, 30, 90].map((d) => (
             <option key={d} value={d}>
@@ -48,13 +49,13 @@ export default function ActivityPanel({ clientId }: { clientId: string }) {
             </option>
           ))}
         </select>
-        <span className="font-mono text-xs text-zinc-600">
+        <span className="font-mono text-xs text-zinc-400">
           recovery rate is computed over genuine leads only — this is the denominator
         </span>
       </div>
 
-      {error && <p className="text-sm text-red-400">{error}</p>}
-      {!activity && !error && <p className="font-mono text-sm text-zinc-500">loading…</p>}
+      {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
+      {!activity && !error && <p className="font-mono text-sm text-zinc-400">loading…</p>}
 
       {activity && (
         <>
@@ -84,13 +85,13 @@ export default function ActivityPanel({ clientId }: { clientId: string }) {
           Recent routing decisions
         </h3>
         {!log ? (
-          <p className="font-mono text-sm text-zinc-500">loading…</p>
+          <p className="font-mono text-sm text-zinc-400">loading…</p>
         ) : log.length === 0 ? (
-          <p className="text-sm text-zinc-500">No routing events yet.</p>
+          <p className="text-sm text-zinc-400">No routing events yet.</p>
         ) : (
           <div className="overflow-x-auto rounded-lg border border-zinc-800">
             <table className="w-full text-left text-sm">
-              <thead className="bg-zinc-900 font-mono text-xs uppercase tracking-wider text-zinc-500">
+              <thead className="bg-zinc-900 font-mono text-xs uppercase tracking-wider text-zinc-400">
                 <tr>
                   <th className="px-3 py-2">When</th>
                   <th className="px-3 py-2">Decision</th>
@@ -112,7 +113,7 @@ export default function ActivityPanel({ clientId }: { clientId: string }) {
                       {item.caller ?? "—"}
                     </td>
                     <td className="px-3 py-2 text-xs text-zinc-400">{item.reason ?? "—"}</td>
-                    <td className="px-3 py-2 font-mono text-[10px] text-zinc-600">
+                    <td className="px-3 py-2 font-mono text-[10px] text-zinc-400">
                       {item.event_type}
                     </td>
                   </tr>
@@ -132,7 +133,7 @@ function Stat({ label, value, accent }: { label: string; value: string; accent?:
       <div className={`text-2xl font-bold ${accent ? "text-signal" : "text-zinc-100"}`}>
         {value}
       </div>
-      <div className="font-mono text-[11px] uppercase tracking-wider text-zinc-500">
+      <div className="font-mono text-[11px] uppercase tracking-wider text-zinc-400">
         {label}
       </div>
     </div>
