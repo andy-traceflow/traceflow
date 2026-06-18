@@ -30,27 +30,44 @@ Check items off as they land.
 - [x] **MEDIUM — No `aria-live` on status/errors.** Login/panel errors + Config "Saved…"/"Done." not announced. → `role="alert"` / `role="status"`. *WCAG 4.1.3*
 - [x] **MEDIUM — No `<h1>` after login.** Wordmark is a `<span>` (`Shell.tsx:32`); panels start at h2. → make the wordmark the `<h1>`.
 
-## Phase 2 — Contrast finish + design tokens
+## Phase 2 — Contrast finish + design tokens — ✅ DONE & VERIFIED 2026-06-17
 
-- [ ] Promote remaining tiny `text-[10px]/[11px]` meta to a readable size/contrast.
-- [ ] Replace hardcoded `accent-[#3b82f6]` (`ConfigPanel.tsx:147`, `LeadsPanel.tsx:58`) with `accent-signal`.
-- [ ] Extract semantic tokens (success/warn/danger/surface/border) — only `--color-signal` exists today; emerald/amber/red/zinc are inline. → `/extract` or `/normalize`.
-- [ ] Normalize border/background opacity steps (`zinc-800`, `/40`, `/60`, `/70` mixed). → `/normalize`.
+> `index.css` `@theme` now defines a documented token system: brand (`signal`),
+> semantic (`success`/`warning`/`danger`), and neutrals (`surface`,
+> `surface-raised`, `border`, `border-strong`). All inline emerald/amber/red and
+> zinc-900/800/700 swapped to tokens; tiny `[10px]/[11px]` → `text-xs`;
+> `accent-[#3b82f6]` → `accent-signal`. Built clean; tokens confirmed resolving in
+> preview (`text-success`→rgb(52,211,153), `bg-surface`→zinc-900,
+> `border-border`→zinc-800), no console errors. Opacity steps (/40–/70) kept as
+> intentional surface layering.
 
-## Phase 3 — Responsive + targets
+- [x] Promote remaining tiny `text-[10px]/[11px]` meta to a readable size/contrast.
+- [x] Replace hardcoded `accent-[#3b82f6]` (`ConfigPanel.tsx:147`, `LeadsPanel.tsx:58`) with `accent-signal`.
+- [x] Extract semantic tokens (success/warn/danger/surface/border) — only `--color-signal` exists today; emerald/amber/red/zinc are inline. → `/extract` or `/normalize`.
+- [x] Normalize border/background opacity steps (`zinc-800`, `/40`, `/60`, `/70` mixed). → `/normalize`. (Now token-based: `bg-surface/40` etc.; layering kept intentionally.)
 
-- [ ] Tap targets under 24px (2.2 AA): tabs, "log out" (`Shell.tsx:56`), adjacent edit/delete links (`MappingsPanel.tsx:107-118`). → `/adapt`. *WCAG 2.5.8*
-- [ ] Tables only `overflow-x-auto` on mobile — adapt to a stacked/card layout under `sm`. → `/adapt`.
-- [ ] `sm:grid-cols-5` on the mappings form (`MappingsPanel.tsx:129`) is cramped — gate wide grids at `md`/`lg`.
-- [ ] Replace native `confirm()` (`UsageCard.tsx:19`, `MappingsPanel.tsx:48`) with a styled confirm. → `/harden`.
+## Phase 3 — Responsive + targets — ✅ DONE 2026-06-17 (confirm() deferred)
 
-## Phase 4 — Motion + finish
+> Tap targets enlarged; Leads table → stacked cards under `sm` (verified at 375px:
+> clean cards, keyboard-operable `button`s). Mappings form grid gated to md/lg.
+> Activity/Mappings tables keep horizontal scroll (standard dense-dashboard pattern).
 
-- [ ] Drawer slide-in + hover/tab transitions (none today). → `/animate`.
-- [ ] `UsageCard` bar: if animated later, use `transform: scaleX` not `width`.
-- [ ] Routing-log `key={i}` → stable key (`ActivityPanel.tsx:103`).
-- [ ] Optional: stress-test the heavy uppercase-mono aesthetic. → `/critique`.
-- [ ] Final spacing/alignment/consistency pass. → `/polish`.
+- [x] Tap targets under 24px (2.2 AA): tabs, "log out", adjacent edit/delete links (now padded + spaced). *WCAG 2.5.8*
+- [x] Tables only `overflow-x-auto` on mobile — Leads adapts to a stacked/card layout under `sm`. (Activity/Mappings intentionally kept scroll — dense admin sub-tables.)
+- [x] `sm:grid-cols-5` on the mappings form is cramped — now `grid-cols-1 sm:grid-cols-2 lg:grid-cols-5`.
+- [ ] Replace native `confirm()` (`UsageCard.tsx`, `MappingsPanel.tsx`) with a styled confirm. → `/harden`. **(DEFERRED — native confirm kept; it's accessible. Optional polish.)**
+
+## Phase 4 — Motion + finish — ✅ DONE 2026-06-17 (critique optional, skipped)
+
+> Base color/focus transitions + `prefers-reduced-motion` honored; drawer slide-in +
+> backdrop fade (CSS keyframes, verified applied: `tf-slide-in`/`tf-fade-in`); usage
+> bar now `transform: scaleX` (verified `matrix(0.387,…)`); routing-log stable keys.
+
+- [x] Drawer slide-in + hover/tab transitions (`tf-slide-in`/`tf-fade-in` keyframes; base `transition` rule; `prefers-reduced-motion` reduce). → `/animate`.
+- [x] `UsageCard` bar uses `transform: scaleX` (origin-left) not `width`.
+- [x] Routing-log `key={i}` → stable composite key (`ActivityPanel.tsx`).
+- [ ] Optional: stress-test the heavy uppercase-mono aesthetic. → `/critique`. **(SKIPPED — aesthetic is intentional; revisit only if desired.)**
+- [x] Final spacing/alignment/consistency pass — addressed via tap-target + token + transition work.
 
 ## Keep (don't regress)
 

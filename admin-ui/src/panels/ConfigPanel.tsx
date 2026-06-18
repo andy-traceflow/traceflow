@@ -54,7 +54,7 @@ export default function ConfigPanel({ clientId }: { clientId: string }) {
   useEffect(load, [load]);
 
   if (error && !config) {
-    return <p role="alert" className="text-sm text-red-400">{error}</p>;
+    return <p role="alert" className="text-sm text-danger">{error}</p>;
   }
   if (!config) {
     return <p className="font-mono text-sm text-zinc-400">loading config…</p>;
@@ -102,8 +102,8 @@ export default function ConfigPanel({ clientId }: { clientId: string }) {
           {config.webhook_integrations.join(", ") || "none"}
         </span>
         <div className="ml-auto flex items-center gap-3">
-          {status && <span role="status" className="font-mono text-xs text-emerald-400">{status}</span>}
-          {error && <span role="alert" className="font-mono text-xs text-red-400">{error}</span>}
+          {status && <span role="status" className="font-mono text-xs text-success">{status}</span>}
+          {error && <span role="alert" className="font-mono text-xs text-danger">{error}</span>}
           <button
             onClick={save}
             disabled={!dirty || saving}
@@ -120,7 +120,7 @@ export default function ConfigPanel({ clientId }: { clientId: string }) {
             rows={3}
             value={(val("greeting_template") as string | null) ?? ""}
             onChange={(e) => set("greeting_template", e.target.value || null)}
-            className="w-full rounded border border-zinc-800 bg-zinc-900 px-3 py-2 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+            className="w-full rounded border border-border bg-surface px-3 py-2 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           />
         </Field>
         <Field label="Qualifier prompt override" hint="blank = platform default prompt">
@@ -128,7 +128,7 @@ export default function ConfigPanel({ clientId }: { clientId: string }) {
             rows={5}
             value={(val("qualification_prompt") as string | null) ?? ""}
             onChange={(e) => set("qualification_prompt", e.target.value || null)}
-            className="w-full rounded border border-zinc-800 bg-zinc-900 px-3 py-2 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+            className="w-full rounded border border-border bg-surface px-3 py-2 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           />
         </Field>
       </Section>
@@ -138,13 +138,13 @@ export default function ConfigPanel({ clientId }: { clientId: string }) {
           {TOGGLES.map(({ key, label, hint }) => (
             <label
               key={key}
-              className="flex cursor-pointer items-start gap-2 rounded border border-zinc-800 bg-zinc-900/60 px-3 py-2"
+              className="flex cursor-pointer items-start gap-2 rounded border border-border bg-surface/60 px-3 py-2"
             >
               <input
                 type="checkbox"
                 checked={cls[key] as boolean}
                 onChange={(e) => setCls({ [key]: e.target.checked })}
-                className="mt-0.5 accent-[#3b82f6]"
+                className="mt-0.5 accent-signal"
               />
               <span>
                 <span className="block text-sm text-zinc-200">{label}</span>
@@ -152,7 +152,7 @@ export default function ConfigPanel({ clientId }: { clientId: string }) {
               </span>
             </label>
           ))}
-          <label className="flex items-start gap-2 rounded border border-zinc-800 bg-zinc-900/60 px-3 py-2">
+          <label className="flex items-start gap-2 rounded border border-border bg-surface/60 px-3 py-2">
             <span className="grow">
               <span className="block text-sm text-zinc-200">Spam risk threshold</span>
               <span className="block text-xs text-zinc-400">
@@ -164,7 +164,7 @@ export default function ConfigPanel({ clientId }: { clientId: string }) {
               onChange={(e) =>
                 setCls({ spam_risk_threshold: e.target.value as ClassificationConfig["spam_risk_threshold"] })
               }
-              className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+              className="rounded border border-border bg-surface px-2 py-1 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
             >
               <option value="low">low</option>
               <option value="moderate">moderate</option>
@@ -261,7 +261,7 @@ export default function ConfigPanel({ clientId }: { clientId: string }) {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
+    <section className="rounded-lg border border-border bg-surface/40 p-4">
       <h3 className="mb-3 font-mono text-xs uppercase tracking-[0.15em] text-signal">
         {title}
       </h3>
@@ -304,7 +304,7 @@ function Input({
       type={type}
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="w-full rounded border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+      className="w-full rounded border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
     />
   );
 }

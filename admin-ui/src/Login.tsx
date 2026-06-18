@@ -45,7 +45,7 @@ export default function Login({ onLoggedIn }: { onLoggedIn: (me: AdminMe) => voi
             autoComplete="username"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="mt-1 w-full rounded border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+            className="mt-1 w-full rounded border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           />
         </label>
         <label className="block">
@@ -58,11 +58,11 @@ export default function Login({ onLoggedIn }: { onLoggedIn: (me: AdminMe) => voi
             autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="mt-1 w-full rounded border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+            className="mt-1 w-full rounded border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           />
         </label>
         {error && (
-          <p role="alert" className="rounded border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-400">
+          <p role="alert" className="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
             {error}
           </p>
         )}

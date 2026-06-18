@@ -1,7 +1,19 @@
 @import "tailwindcss";
 
 @theme {
-  --color-signal: #3b82f6; /* signal blue — brighter step of the landing's #2563eb for dark surfaces */
+  /* Brand */
+  --color-signal: #3b82f6; /* primary accent — brighter step of the landing's #2563eb for dark surfaces */
+
+  /* Semantic status — one hue each; use /opacity for borders + fills */
+  --color-success: #34d399; /* emerald — won, qualified, positive rates */
+  --color-warning: #f59e0b; /* amber — usage approaching cap */
+  --color-danger: #f87171; /* red — errors, spam, destructive actions */
+
+  /* Neutral surfaces over the zinc-950 page background */
+  --color-surface: #18181b; /* cards, inputs, table headers (use /40-/70 for translucent) */
+  --color-surface-raised: #27272a; /* chips + outbound message bubbles */
+  --color-border: #27272a; /* default hairline */
+  --color-border-strong: #3f3f46; /* secondary-button outlines */
   --font-mono:
     "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
@@ -18,6 +30,51 @@
     outline: 2px solid var(--color-signal);
     outline-offset: 2px;
     border-radius: 0.375rem;
+  }
+
+  /* Smooth color + focus feedback on interactive elements
+     (neutralized under prefers-reduced-motion below). */
+  button,
+  a,
+  summary,
+  select,
+  [role="tab"],
+  [role="button"],
+  [tabindex] {
+    transition:
+      color 0.15s ease,
+      background-color 0.15s ease,
+      border-color 0.15s ease,
+      box-shadow 0.15s ease,
+      opacity 0.15s ease;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes tf-slide-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes tf-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }
 

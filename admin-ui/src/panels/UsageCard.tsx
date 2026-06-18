@@ -30,15 +30,15 @@ export default function UsageCard({ clientId }: { clientId: string }) {
     }
   }
 
-  if (error) return <p role="alert" className="text-sm text-red-400">{error}</p>;
+  if (error) return <p role="alert" className="text-sm text-danger">{error}</p>;
   if (!usage) return <p className="font-mono text-sm text-zinc-400">loading…</p>;
 
   const pct = Math.min(usage.percent_used, 100);
   const barTone =
-    pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-500" : "bg-emerald-500";
+    pct >= 90 ? "bg-danger" : pct >= 70 ? "bg-warning" : "bg-success";
 
   return (
-    <div className="max-w-md rounded-lg border border-zinc-800 bg-zinc-900/40 p-5">
+    <div className="max-w-md rounded-lg border border-border bg-surface/40 p-5">
       <h2 className="font-mono text-xs uppercase tracking-[0.15em] text-signal">
         AI usage this period
       </h2>
@@ -46,8 +46,11 @@ export default function UsageCard({ clientId }: { clientId: string }) {
         <span className="text-3xl font-bold text-zinc-100">{usage.used}</span>
         <span className="font-mono text-sm text-zinc-400">/ {usage.cap} interactions</span>
       </div>
-      <div className="mt-3 h-2 overflow-hidden rounded bg-zinc-800">
-        <div className={`h-full ${barTone}`} style={{ width: `${pct}%` }} />
+      <div className="mt-3 h-2 overflow-hidden rounded bg-surface-raised">
+        <div
+          className={`h-full origin-left ${barTone} transition-transform duration-500 ease-out`}
+          style={{ transform: `scaleX(${pct / 100})` }}
+        />
       </div>
       <div className="mt-2 flex items-center justify-between font-mono text-xs text-zinc-400">
         <span>{usage.percent_used.toFixed(1)}% used</span>
@@ -56,7 +59,7 @@ export default function UsageCard({ clientId }: { clientId: string }) {
       <button
         onClick={reset}
         disabled={busy}
-        className="mt-4 rounded border border-zinc-700 px-3 py-1.5 font-mono text-xs text-zinc-300 hover:border-zinc-500 disabled:opacity-40"
+        className="mt-4 rounded border border-border-strong px-3 py-1.5 font-mono text-xs text-zinc-300 hover:border-zinc-500 disabled:opacity-40"
       >
         {busy ? "Resetting…" : "Reset counter"}
       </button>

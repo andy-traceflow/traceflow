@@ -28,7 +28,7 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
 
   return (
     <div className="mx-auto min-h-screen max-w-6xl px-4 pb-16">
-      <header className="flex flex-wrap items-center gap-3 border-b border-zinc-800 py-3">
+      <header className="flex flex-wrap items-center gap-3 border-b border-border py-3">
         <h1 className="font-mono text-xs uppercase tracking-[0.2em] text-signal">
           TraceFlow Admin
         </h1>
@@ -36,7 +36,7 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
           aria-label="Active client"
           value={clientId ?? ""}
           onChange={(e) => setClientId(e.target.value || null)}
-          className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+          className="rounded border border-border bg-surface px-2 py-1.5 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
         >
           {clients.length === 0 && <option value="">no clients</option>}
           {clients.map((c) => (
@@ -55,7 +55,7 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
           <span className="font-mono text-xs text-zinc-400">{me.email}</span>
           <button
             onClick={onLogout}
-            className="rounded border border-zinc-800 px-2 py-1 font-mono text-xs text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
+            className="rounded border border-border px-2.5 py-1.5 font-mono text-xs text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
           >
             log out
           </button>
@@ -87,10 +87,10 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
             aria-controls="tabpanel"
             tabIndex={tab === t ? 0 : -1}
             onClick={() => setTab(t)}
-            className={`rounded px-3 py-1.5 font-mono text-xs uppercase tracking-wider ${
+            className={`rounded px-3 py-2 font-mono text-xs uppercase tracking-wider ${
               tab === t
                 ? "bg-signal text-zinc-950"
-                : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+                : "text-zinc-400 hover:bg-surface hover:text-zinc-200"
             }`}
           >
             {t}
@@ -99,7 +99,7 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
       </nav>
 
       {error && (
-        <p role="alert" className="mb-4 rounded border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-400">
+        <p role="alert" className="mb-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
           {error}
         </p>
       )}

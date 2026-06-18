@@ -42,7 +42,7 @@ export default function LeadsPanel({ clientId }: { clientId: string }) {
           aria-label="Filter leads by classification"
           value={classification}
           onChange={(e) => setClassification(e.target.value)}
-          className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+          className="rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
         >
           {CLASSIFICATIONS.map((c) => (
             <option key={c} value={c}>
@@ -55,7 +55,7 @@ export default function LeadsPanel({ clientId }: { clientId: string }) {
             type="checkbox"
             checked={includeTest}
             onChange={(e) => setIncludeTest(e.target.checked)}
-            className="accent-[#3b82f6]"
+            className="accent-signal"
           />
           include test leads
         </label>
@@ -66,7 +66,7 @@ export default function LeadsPanel({ clientId }: { clientId: string }) {
         )}
       </div>
 
-      {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
+      {error && <p role="alert" className="text-sm text-danger">{error}</p>}
       {!leads && !error && <p className="font-mono text-sm text-zinc-400">loading…</p>}
 
       {leads && leads.data.length === 0 && (
@@ -76,26 +76,34 @@ export default function LeadsPanel({ clientId }: { clientId: string }) {
       )}
 
       {leads && leads.data.length > 0 && (
-        <div className="overflow-x-auto rounded-lg border border-zinc-800">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-zinc-900 font-mono text-xs uppercase tracking-wider text-zinc-400">
-              <tr>
-                <th className="px-3 py-2">When</th>
-                <th className="px-3 py-2">Contact</th>
-                <th className="px-3 py-2">Service</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2">Outcome</th>
-                <th className="px-3 py-2">CRM</th>
-                <th className="px-3 py-2">Msgs</th>
-              </tr>
-            </thead>
-            <tbody>
-              {leads.data.map((l) => (
-                <LeadRow key={l.id} lead={l} onOpen={() => setSelectedId(l.id)} />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          {/* Desktop: dense table. Mobile (<sm): stacked cards — adapt, don't shrink. */}
+          <div className="hidden overflow-x-auto rounded-lg border border-border sm:block">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-surface font-mono text-xs uppercase tracking-wider text-zinc-400">
+                <tr>
+                  <th className="px-3 py-2">When</th>
+                  <th className="px-3 py-2">Contact</th>
+                  <th className="px-3 py-2">Service</th>
+                  <th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2">Outcome</th>
+                  <th className="px-3 py-2">CRM</th>
+                  <th className="px-3 py-2">Msgs</th>
+                </tr>
+              </thead>
+              <tbody>
+                {leads.data.map((l) => (
+                  <LeadRow key={l.id} lead={l} onOpen={() => setSelectedId(l.id)} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <ul className="space-y-2 sm:hidden">
+            {leads.data.map((l) => (
+              <LeadCard key={l.id} lead={l} onOpen={() => setSelectedId(l.id)} />
+            ))}
+          </ul>
+        </>
       )}
 
       {selectedId && (
@@ -122,7 +130,7 @@ function LeadRow({ lead, onOpen }: { lead: LeadItem; onOpen: () => void }) {
           onOpen();
         }
       }}
-      className="cursor-pointer border-t border-zinc-800/70 hover:bg-zinc-900/70 focus-visible:bg-zinc-900/70"
+      className="cursor-pointer border-t border-border/70 hover:bg-surface/70 focus-visible:bg-surface/70"
     >
       <td className="px-3 py-2 font-mono text-xs text-zinc-400">{fmtDate(lead.created_at)}</td>
       <td className="px-3 py-2">
@@ -138,21 +146,21 @@ function LeadRow({ lead, onOpen }: { lead: LeadItem; onOpen: () => void }) {
       <td className="px-3 py-2">
         <StatusBadge value={lead.qualification_status} />
         {lead.is_test && (
-          <span className="ml-1 rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400">
+          <span className="ml-1 rounded bg-surface-raised px-1.5 py-0.5 font-mono text-xs text-zinc-400">
             TEST
           </span>
         )}
       </td>
       <td className="px-3 py-2 font-mono text-xs">
         {lead.outcome === "won" ? (
-          <span className="text-emerald-400">won {money(lead.recovered_value)}</span>
+          <span className="text-success">won {money(lead.recovered_value)}</span>
         ) : (
           <span className="text-zinc-400">{lead.outcome}</span>
         )}
       </td>
       <td className="px-3 py-2 font-mono text-xs">
         {lead.external_id ? (
-          <span className="text-emerald-400">pushed</span>
+          <span className="text-success">pushed</span>
         ) : (
           <span className="text-zinc-400">—</span>
         )}
@@ -162,15 +170,55 @@ function LeadRow({ lead, onOpen }: { lead: LeadItem; onOpen: () => void }) {
   );
 }
 
+function LeadCard({ lead, onOpen }: { lead: LeadItem; onOpen: () => void }) {
+  return (
+    <li
+      role="button"
+      tabIndex={0}
+      aria-label={`Open lead: ${lead.contact_name ?? lead.phone ?? "details"}`}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      className="cursor-pointer rounded-lg border border-border bg-surface/40 p-3 hover:bg-surface/70 focus-visible:bg-surface/70"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="text-zinc-200">{lead.contact_name ?? "Unknown caller"}</div>
+          <div className="font-mono text-xs text-zinc-400">{lead.phone}</div>
+        </div>
+        <StatusBadge value={lead.qualification_status} />
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-zinc-400">
+        <span>{fmtDate(lead.created_at)}</span>
+        {lead.service_type && <span>{lead.service_type}</span>}
+        {lead.outcome === "won" ? (
+          <span className="text-success">won {money(lead.recovered_value)}</span>
+        ) : (
+          <span>{lead.outcome}</span>
+        )}
+        {lead.external_id && <span className="text-success">pushed</span>}
+        <span>{lead.message_count} msg</span>
+        {lead.is_test && (
+          <span className="rounded bg-surface-raised px-1.5 py-0.5 text-zinc-400">TEST</span>
+        )}
+      </div>
+    </li>
+  );
+}
+
 function StatusBadge({ value }: { value: string }) {
   const tone =
     value === "qualified" || value === "high_value"
-      ? "border-emerald-800 text-emerald-400"
+      ? "border-success/40 text-success"
       : value === "spam" || value === "duplicate"
-        ? "border-red-900 text-red-400"
-        : "border-zinc-700 text-zinc-300";
+        ? "border-danger/40 text-danger"
+        : "border-border-strong text-zinc-300";
   return (
-    <span className={`rounded border px-1.5 py-0.5 font-mono text-[11px] ${tone}`}>
+    <span className={`rounded border px-1.5 py-0.5 font-mono text-xs ${tone}`}>
       {value}
     </span>
   );
@@ -234,7 +282,10 @@ function LeadDrawer({
   }
 
   return (
-    <div className="fixed inset-0 z-10 flex justify-end bg-black/60" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-10 flex justify-end bg-black/60 animate-[tf-fade-in_150ms_ease-out]"
+      onClick={onClose}
+    >
       <div
         ref={panelRef}
         role="dialog"
@@ -242,7 +293,7 @@ function LeadDrawer({
         aria-label="Lead details"
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
-        className="h-full w-full max-w-xl overflow-y-auto border-l border-zinc-800 bg-zinc-950 p-5 outline-none"
+        className="h-full w-full max-w-xl overflow-y-auto border-l border-border bg-zinc-950 p-5 outline-none animate-[tf-slide-in_200ms_ease-out]"
       >
         {!lead ? (
           <p className="font-mono text-sm text-zinc-400">loading…</p>
@@ -259,13 +310,13 @@ function LeadDrawer({
               </div>
               <button
                 onClick={onClose}
-                className="ml-auto rounded border border-zinc-800 px-2 py-1 font-mono text-xs text-zinc-400 hover:text-zinc-200"
+                className="ml-auto rounded border border-border px-2.5 py-1.5 font-mono text-xs text-zinc-400 hover:text-zinc-200"
               >
                 close
               </button>
             </div>
 
-            <div className="grid grid-cols-2 gap-2 rounded-lg border border-zinc-800 bg-zinc-900/40 p-3 font-mono text-xs">
+            <div className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-surface/40 p-3 font-mono text-xs">
               <Meta k="classification" v={lead.classification} />
               <Meta k="status" v={lead.qualification_status} />
               <Meta k="intent" v={lead.intent?.intent ?? "—"} />
@@ -291,7 +342,7 @@ function LeadDrawer({
               <button
                 disabled={busy}
                 onClick={() => act("mark-test", { is_test: !lead.is_test })}
-                className="rounded border border-zinc-700 px-3 py-1.5 font-mono text-xs text-zinc-300 hover:border-zinc-500 disabled:opacity-40"
+                className="rounded border border-border-strong px-3 py-1.5 font-mono text-xs text-zinc-300 hover:border-zinc-500 disabled:opacity-40"
               >
                 {lead.is_test ? "Unmark test" : "Mark as test"}
               </button>
@@ -324,12 +375,12 @@ function LeadDrawer({
                       key={m.id}
                       className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
                         m.direction === "outbound"
-                          ? "ml-auto bg-zinc-800 text-zinc-200"
-                          : "bg-zinc-900 text-zinc-300"
+                          ? "ml-auto bg-surface-raised text-zinc-200"
+                          : "bg-surface text-zinc-300"
                       }`}
                     >
                       <p className="whitespace-pre-wrap">{m.body}</p>
-                      <p className="mt-1 font-mono text-[10px] text-zinc-400">
+                      <p className="mt-1 font-mono text-xs text-zinc-400">
                         {m.direction}
                         {m.ai_generated ? " · AI" : ""} · {fmtDate(m.created_at)}
                       </p>
@@ -378,7 +429,7 @@ function OutcomeForm({
         aria-label="Lead outcome"
         value={outcome}
         onChange={(e) => setOutcome(e.target.value)}
-        className="rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+        className="rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
       >
         <option value="won">won</option>
         <option value="lost">lost</option>
@@ -390,12 +441,12 @@ function OutcomeForm({
         aria-label="Recovered value in dollars"
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        className="w-24 rounded border border-zinc-800 bg-zinc-900 px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+        className="w-24 rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
       />
       <button
         disabled={disabled || (outcome === "won" && value === "")}
         onClick={() => onSubmit(outcome, value)}
-        className="rounded border border-zinc-700 px-2 py-1.5 font-mono text-xs text-zinc-300 hover:border-zinc-500 disabled:opacity-40"
+        className="rounded border border-border-strong px-2 py-1.5 font-mono text-xs text-zinc-300 hover:border-zinc-500 disabled:opacity-40"
       >
         record outcome
       </button>
