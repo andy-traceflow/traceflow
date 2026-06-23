@@ -39,7 +39,7 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
           onChange={(e) => setClientId(e.target.value || null)}
           className="rounded border border-border bg-surface px-2 py-1.5 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
         >
-          {clients.length === 0 && <option value="">no clients</option>}
+          {clients.length === 0 && <option value="">No clients</option>}
           {clients.map((c) => (
             <option key={c.id} value={c.id}>
               {c.business_name} · {labelFor(CLIENT_STATUS_LABELS, c.status)}
@@ -58,7 +58,7 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
             onClick={onLogout}
             className="rounded border border-border px-2.5 py-1.5 font-mono text-xs text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
           >
-            log out
+            Log out
           </button>
         </div>
       </header>
@@ -107,7 +107,7 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
 
       {!clientId ? (
         <p className="py-12 text-center text-sm text-zinc-400">
-          No client selected — provision clients via scripts/onboard_client.py.
+          No clients yet. Add a client to get started.
         </p>
       ) : (
         <main id="tabpanel" role="tabpanel" aria-labelledby={`tab-${tab}`}>

@@ -25,7 +25,7 @@ export default function App() {
   if (probing) {
     return (
       <div className="flex min-h-screen items-center justify-center font-mono text-sm text-zinc-400">
-        checking session…
+        Checking session…
       </div>
     );
   }

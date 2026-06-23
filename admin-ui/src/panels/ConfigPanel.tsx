@@ -58,7 +58,7 @@ export default function ConfigPanel({ clientId }: { clientId: string }) {
     return <p role="alert" className="text-sm text-danger">{error}</p>;
   }
   if (!config) {
-    return <p className="font-mono text-sm text-zinc-400">loading config…</p>;
+    return <p className="font-mono text-sm text-zinc-400">Loading config…</p>;
   }
 
   // current value = draft override or loaded config
@@ -134,7 +134,7 @@ export default function ConfigPanel({ clientId }: { clientId: string }) {
         </Field>
       </Section>
 
-      <Section title="Caller classification (lifecycle v2)">
+      <Section title="Caller classification">
         <div className="grid gap-2 sm:grid-cols-2">
           {TOGGLES.map(({ key, label, hint }) => (
             <label

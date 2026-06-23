@@ -47,17 +47,17 @@ export default function ActivityPanel({ clientId }: { clientId: string }) {
         >
           {[7, 30, 90].map((d) => (
             <option key={d} value={d}>
-              last {d} days
+              Last {d} days
             </option>
           ))}
         </select>
         <span className="font-mono text-xs text-zinc-400">
-          recovery rate is computed over genuine leads only — this is the denominator
+          Rate is over genuine leads only.
         </span>
       </div>
 
       {error && <p role="alert" className="text-sm text-danger">{error}</p>}
-      {!activity && !error && <p className="font-mono text-sm text-zinc-400">loading…</p>}
+      {!activity && !error && <p className="font-mono text-sm text-zinc-400">Loading…</p>}
 
       {activity && (
         <>
@@ -73,10 +73,10 @@ export default function ActivityPanel({ clientId }: { clientId: string }) {
           </div>
           <div className="flex gap-6 font-mono text-sm">
             <span className="text-success">
-              genuine-lead rate: {(activity.genuine_lead_rate * 100).toFixed(1)}%
+              Genuine-lead rate: {(activity.genuine_lead_rate * 100).toFixed(1)}%
             </span>
             <span className="text-danger">
-              spam rate: {(activity.spam_rate * 100).toFixed(1)}%
+              Spam rate: {(activity.spam_rate * 100).toFixed(1)}%
             </span>
           </div>
         </>
@@ -87,7 +87,7 @@ export default function ActivityPanel({ clientId }: { clientId: string }) {
           Recent routing decisions
         </h3>
         {!log ? (
-          <p className="font-mono text-sm text-zinc-400">loading…</p>
+          <p className="font-mono text-sm text-zinc-400">Loading…</p>
         ) : log.length === 0 ? (
           <p className="text-sm text-zinc-400">No routing events yet.</p>
         ) : (

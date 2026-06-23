@@ -66,7 +66,7 @@ export default function LeadsPanel({ clientId }: { clientId: string }) {
             onChange={(e) => setIncludeTest(e.target.checked)}
             className="accent-signal"
           />
-          include test leads
+          Include test leads
         </label>
         {leads && (
           <span className="ml-auto font-mono text-xs text-zinc-400">
@@ -76,7 +76,7 @@ export default function LeadsPanel({ clientId }: { clientId: string }) {
       </div>
 
       {error && <p role="alert" className="text-sm text-danger">{error}</p>}
-      {!leads && !error && <p className="font-mono text-sm text-zinc-400">loading…</p>}
+      {!leads && !error && <p className="font-mono text-sm text-zinc-400">Loading…</p>}
 
       {leads && leads.data.length === 0 && (
         <p className="py-8 text-center text-sm text-zinc-400">
@@ -307,7 +307,7 @@ function LeadDrawer({
         className="h-full w-full max-w-xl overflow-y-auto border-l border-border bg-zinc-950 p-5 outline-none animate-[tf-slide-in_200ms_ease-out]"
       >
         {!lead ? (
-          <p className="font-mono text-sm text-zinc-400">loading…</p>
+          <p className="font-mono text-sm text-zinc-400">Loading…</p>
         ) : (
           <div className="space-y-5">
             <div className="flex items-start gap-3">
@@ -323,23 +323,23 @@ function LeadDrawer({
                 onClick={onClose}
                 className="ml-auto rounded border border-border px-2.5 py-1.5 font-mono text-xs text-zinc-400 hover:text-zinc-200"
               >
-                close
+                Close
               </button>
             </div>
 
             <div className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-surface/40 p-3 font-mono text-xs">
-              <Meta k="classification" v={labelFor(CLASSIFICATION_SINGULAR_LABELS, lead.classification)} />
-              <Meta k="status" v={labelFor(QUALIFICATION_STATUS_LABELS, lead.qualification_status)} />
-              <Meta k="intent" v={labelFor(INTENT_LABELS, lead.intent?.intent)} />
-              <Meta k="score" v={lead.qualification_score?.toString() ?? "—"} />
-              <Meta k="service" v={lead.service_type ?? "—"} />
-              <Meta k="budget" v={lead.budget_range ?? "—"} />
-              <Meta k="sqft" v={lead.sqft?.toString() ?? "—"} />
-              <Meta k="timeframe" v={lead.timeframe ?? "—"} />
-              <Meta k="outcome" v={`${labelFor(OUTCOME_LABELS, lead.outcome)} ${money(lead.recovered_value)}`} />
-              <Meta k="source" v={labelFor(OUTCOME_SOURCE_LABELS, lead.outcome_source)} />
-              <Meta k="CRM id" v={lead.external_id ?? "not pushed"} />
-              <Meta k="test lead" v={lead.is_test ? "yes" : "no"} />
+              <Meta k="Classification" v={labelFor(CLASSIFICATION_SINGULAR_LABELS, lead.classification)} />
+              <Meta k="Status" v={labelFor(QUALIFICATION_STATUS_LABELS, lead.qualification_status)} />
+              <Meta k="Intent" v={labelFor(INTENT_LABELS, lead.intent?.intent)} />
+              <Meta k="Score" v={lead.qualification_score?.toString() ?? "—"} />
+              <Meta k="Service" v={lead.service_type ?? "—"} />
+              <Meta k="Budget" v={lead.budget_range ?? "—"} />
+              <Meta k="Sq ft" v={lead.sqft?.toString() ?? "—"} />
+              <Meta k="Timeframe" v={lead.timeframe ?? "—"} />
+              <Meta k="Outcome" v={`${labelFor(OUTCOME_LABELS, lead.outcome)} ${money(lead.recovered_value)}`} />
+              <Meta k="Source" v={labelFor(OUTCOME_SOURCE_LABELS, lead.outcome_source)} />
+              <Meta k="CRM ID" v={lead.external_id ?? "not pushed"} />
+              <Meta k="Test lead" v={lead.is_test ? "Yes" : "No"} />
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -376,7 +376,7 @@ function LeadDrawer({
                 Conversation
               </h4>
               {!messages ? (
-                <p className="font-mono text-xs text-zinc-400">loading…</p>
+                <p className="font-mono text-xs text-zinc-400">Loading…</p>
               ) : messages.length === 0 ? (
                 <p className="text-sm text-zinc-400">No messages.</p>
               ) : (
@@ -459,7 +459,7 @@ function OutcomeForm({
         onClick={() => onSubmit(outcome, value)}
         className="rounded border border-border-strong px-2 py-1.5 font-mono text-xs text-zinc-300 hover:border-zinc-500 disabled:opacity-40"
       >
-        record outcome
+        Record outcome
       </button>
     </span>
   );

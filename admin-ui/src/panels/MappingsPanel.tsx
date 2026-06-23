@@ -70,7 +70,7 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
       {error && <p role="alert" className="text-sm text-danger">{error}</p>}
 
       {!mappings ? (
-        <p className="font-mono text-sm text-zinc-400">loading…</p>
+        <p className="font-mono text-sm text-zinc-400">Loading…</p>
       ) : mappings.length === 0 ? (
         <p className="text-sm text-zinc-400">
           No mappings — zero-config defaults apply where the adapter has them (HubSpot
@@ -110,13 +110,13 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
                         onClick={() => setDraft(m)}
                         className="rounded px-2 py-1 font-mono text-xs text-zinc-400 hover:bg-surface hover:text-zinc-100"
                       >
-                        edit
+                        Edit
                       </button>
                       <button
                         onClick={() => remove(m)}
                         className="rounded px-2 py-1 font-mono text-xs text-danger hover:bg-danger/10"
                       >
-                        delete
+                        Delete
                       </button>
                     </div>
                   </td>

@@ -31,7 +31,7 @@ export default function UsageCard({ clientId }: { clientId: string }) {
   }
 
   if (error) return <p role="alert" className="text-sm text-danger">{error}</p>;
-  if (!usage) return <p className="font-mono text-sm text-zinc-400">loading…</p>;
+  if (!usage) return <p className="font-mono text-sm text-zinc-400">Loading…</p>;
 
   const pct = Math.min(usage.percent_used, 100);
   const barTone =
@@ -64,7 +64,7 @@ export default function UsageCard({ clientId }: { clientId: string }) {
         {busy ? "Resetting…" : "Reset counter"}
       </button>
       <p className="mt-2 text-xs text-zinc-400">
-        Audit-logged. The cap itself is edited in Config → Operations.
+        Cap is set in Config → Operations.
       </p>
     </div>
   );
