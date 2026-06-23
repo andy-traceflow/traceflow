@@ -29,13 +29,13 @@ export default function Login({ onLoggedIn }: { onLoggedIn: (me: AdminMe) => voi
     <div className="flex min-h-screen items-center justify-center px-4">
       <form onSubmit={submit} className="w-full max-w-sm space-y-4">
         <div>
-          <div className="font-mono text-xs uppercase tracking-[0.2em] text-signal">
+          <div className="font-mono text-base uppercase tracking-[0.2em] text-signal">
             TraceFlow
           </div>
-          <h1 className="mt-1 text-xl font-semibold text-zinc-100">Admin console</h1>
+          <h1 className="mt-1 text-2xl font-semibold text-zinc-100">Admin console</h1>
         </div>
         <label className="block">
-          <span className="font-mono text-xs uppercase tracking-wider text-zinc-400">
+          <span className="font-mono text-sm uppercase tracking-wider text-zinc-400">
             Email
           </span>
           <input
@@ -45,11 +45,11 @@ export default function Login({ onLoggedIn }: { onLoggedIn: (me: AdminMe) => voi
             autoComplete="username"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="mt-1 w-full rounded border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+            className="mt-1 w-full rounded border border-border bg-surface px-3 py-2.5 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           />
         </label>
         <label className="block">
-          <span className="font-mono text-xs uppercase tracking-wider text-zinc-400">
+          <span className="font-mono text-sm uppercase tracking-wider text-zinc-400">
             Password
           </span>
           <input
@@ -58,7 +58,7 @@ export default function Login({ onLoggedIn }: { onLoggedIn: (me: AdminMe) => voi
             autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="mt-1 w-full rounded border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+            className="mt-1 w-full rounded border border-border bg-surface px-3 py-2.5 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           />
         </label>
         {error && (
@@ -69,7 +69,7 @@ export default function Login({ onLoggedIn }: { onLoggedIn: (me: AdminMe) => voi
         <button
           type="submit"
           disabled={busy}
-          className="w-full rounded bg-signal px-3 py-2 text-sm font-semibold text-zinc-950 hover:opacity-90 disabled:opacity-50"
+          className="w-full rounded bg-signal px-3 py-2.5 text-sm font-semibold text-zinc-950 hover:opacity-90 disabled:opacity-50"
         >
           {busy ? "Signing in…" : "Sign in"}
         </button>

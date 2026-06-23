@@ -39,7 +39,7 @@ export default function UsageCard({ clientId }: { clientId: string }) {
 
   return (
     <div className="max-w-md rounded-lg border border-border bg-surface/40 p-5">
-      <h2 className="font-mono text-xs uppercase tracking-[0.15em] text-signal">
+      <h2 className="font-mono text-sm uppercase tracking-[0.15em] text-signal">
         AI usage this period
       </h2>
       <div className="mt-3 flex items-baseline gap-2">
@@ -59,7 +59,7 @@ export default function UsageCard({ clientId }: { clientId: string }) {
       <button
         onClick={reset}
         disabled={busy}
-        className="mt-4 rounded border border-border-strong px-3 py-1.5 font-mono text-xs text-zinc-300 hover:border-zinc-500 disabled:opacity-40"
+        className="mt-4 rounded border border-border-strong px-3 py-2.5 font-mono text-sm text-zinc-300 hover:border-zinc-500 disabled:opacity-40"
       >
         {busy ? "Resetting…" : "Reset counter"}
       </button>

@@ -51,7 +51,7 @@ export default function LeadsPanel({ clientId }: { clientId: string }) {
           aria-label="Filter leads by classification"
           value={classification}
           onChange={(e) => setClassification(e.target.value)}
-          className="rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+          className="rounded border border-border bg-surface px-3 py-2.5 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
         >
           {CLASSIFICATIONS.map((c) => (
             <option key={c} value={c}>
@@ -59,7 +59,7 @@ export default function LeadsPanel({ clientId }: { clientId: string }) {
             </option>
           ))}
         </select>
-        <label className="flex items-center gap-1.5 font-mono text-xs text-zinc-400">
+        <label className="flex items-center gap-1.5 font-mono text-sm text-zinc-400">
           <input
             type="checkbox"
             checked={includeTest}
@@ -91,7 +91,7 @@ export default function LeadsPanel({ clientId }: { clientId: string }) {
           {/* Desktop: dense table. Mobile (<sm): stacked cards — adapt, don't shrink. */}
           <div className="hidden overflow-x-auto rounded-lg border border-border sm:block">
             <table className="w-full text-left text-sm">
-              <thead className="bg-surface font-mono text-xs uppercase tracking-wider text-zinc-400">
+              <thead className="bg-surface font-mono text-sm uppercase tracking-wider text-zinc-400">
                 <tr>
                   <th className="px-3 py-2">When</th>
                   <th className="px-3 py-2">Contact</th>
@@ -145,7 +145,7 @@ function LeadRow({ lead, onOpen }: { lead: LeadItem; onOpen: () => void }) {
     >
       <td className="px-3 py-2 font-mono text-xs text-zinc-400">{fmtDate(lead.created_at)}</td>
       <td className="px-3 py-2">
-        <div className="text-zinc-200">{lead.contact_name ?? "Unknown caller"}</div>
+        <div className="text-base font-medium text-zinc-200">{lead.contact_name ?? "Unknown caller"}</div>
         <div className="font-mono text-xs text-zinc-400">{lead.phone}</div>
       </td>
       <td className="px-3 py-2 text-zinc-300">
@@ -198,7 +198,7 @@ function LeadCard({ lead, onOpen }: { lead: LeadItem; onOpen: () => void }) {
     >
       <div className="flex items-start justify-between gap-2">
         <div>
-          <div className="text-zinc-200">{lead.contact_name ?? "Unknown caller"}</div>
+          <div className="text-base font-medium text-zinc-200">{lead.contact_name ?? "Unknown caller"}</div>
           <div className="font-mono text-xs text-zinc-400">{lead.phone}</div>
         </div>
         <StatusBadge value={lead.qualification_status} />
@@ -321,13 +321,13 @@ function LeadDrawer({
               </div>
               <button
                 onClick={onClose}
-                className="ml-auto rounded border border-border px-2.5 py-1.5 font-mono text-xs text-zinc-400 hover:text-zinc-200"
+                className="ml-auto rounded border border-border px-3 py-2 font-mono text-sm text-zinc-400 hover:text-zinc-200"
               >
                 Close
               </button>
             </div>
 
-            <div className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-surface/40 p-3 font-mono text-xs">
+            <div className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-surface/40 p-3 font-mono text-sm">
               <Meta k="Classification" v={labelFor(CLASSIFICATION_SINGULAR_LABELS, lead.classification)} />
               <Meta k="Status" v={labelFor(QUALIFICATION_STATUS_LABELS, lead.qualification_status)} />
               <Meta k="Intent" v={labelFor(INTENT_LABELS, lead.intent?.intent)} />
@@ -346,14 +346,14 @@ function LeadDrawer({
               <button
                 disabled={busy}
                 onClick={() => act("repush")}
-                className="rounded bg-signal px-3 py-1.5 text-xs font-semibold text-zinc-950 disabled:opacity-40"
+                className="rounded bg-signal px-3 py-2.5 text-sm font-semibold text-zinc-950 disabled:opacity-40"
               >
                 {lead.external_id ? "Re-sync to CRM" : "Push to CRM"}
               </button>
               <button
                 disabled={busy}
                 onClick={() => act("mark-test", { is_test: !lead.is_test })}
-                className="rounded border border-border-strong px-3 py-1.5 font-mono text-xs text-zinc-300 hover:border-zinc-500 disabled:opacity-40"
+                className="rounded border border-border-strong px-3 py-2.5 font-mono text-sm text-zinc-300 hover:border-zinc-500 disabled:opacity-40"
               >
                 {lead.is_test ? "Unmark test" : "Mark as test"}
               </button>
@@ -372,7 +372,7 @@ function LeadDrawer({
             </div>
 
             <div>
-              <h4 className="mb-2 font-mono text-xs uppercase tracking-[0.15em] text-signal">
+              <h4 className="mb-2 font-mono text-sm uppercase tracking-[0.15em] text-signal">
                 Conversation
               </h4>
               {!messages ? (
@@ -403,7 +403,7 @@ function LeadDrawer({
 
             {lead.notes && (
               <div>
-                <h4 className="mb-1 font-mono text-xs uppercase tracking-[0.15em] text-signal">
+                <h4 className="mb-1 font-mono text-sm uppercase tracking-[0.15em] text-signal">
                   Notes
                 </h4>
                 <p className="whitespace-pre-wrap text-sm text-zinc-300">{lead.notes}</p>
@@ -440,7 +440,7 @@ function OutcomeForm({
         aria-label="Lead outcome"
         value={outcome}
         onChange={(e) => setOutcome(e.target.value)}
-        className="rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+        className="rounded border border-border bg-surface px-3 py-2.5 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
       >
         <option value="won">{OUTCOME_LABELS.won}</option>
         <option value="lost">{OUTCOME_LABELS.lost}</option>
@@ -452,12 +452,12 @@ function OutcomeForm({
         aria-label="Recovered value in dollars"
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        className="w-24 rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+        className="w-24 rounded border border-border bg-surface px-3 py-2.5 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
       />
       <button
         disabled={disabled || (outcome === "won" && value === "")}
         onClick={() => onSubmit(outcome, value)}
-        className="rounded border border-border-strong px-2 py-1.5 font-mono text-xs text-zinc-300 hover:border-zinc-500 disabled:opacity-40"
+        className="rounded border border-border-strong px-3 py-2.5 font-mono text-sm text-zinc-300 hover:border-zinc-500 disabled:opacity-40"
       >
         Record outcome
       </button>

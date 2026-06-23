@@ -79,7 +79,7 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
       ) : (
         <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full text-left text-sm">
-            <thead className="bg-surface font-mono text-xs uppercase tracking-wider text-zinc-400">
+            <thead className="bg-surface font-mono text-sm uppercase tracking-wider text-zinc-400">
               <tr>
                 <th className="px-3 py-2">Integration</th>
                 <th className="px-3 py-2">Canonical</th>
@@ -108,13 +108,13 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
                     <div className="flex justify-end gap-1">
                       <button
                         onClick={() => setDraft(m)}
-                        className="rounded px-2 py-1 font-mono text-xs text-zinc-400 hover:bg-surface hover:text-zinc-100"
+                        className="rounded px-3 py-1.5 font-mono text-sm text-zinc-400 hover:bg-surface hover:text-zinc-100"
                       >
                         Edit
                       </button>
                       <button
                         onClick={() => remove(m)}
-                        className="rounded px-2 py-1 font-mono text-xs text-danger hover:bg-danger/10"
+                        className="rounded px-3 py-1.5 font-mono text-sm text-danger hover:bg-danger/10"
                       >
                         Delete
                       </button>
@@ -136,7 +136,7 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
             required
             value={draft.integration}
             onChange={(e) => setDraft({ ...draft, integration: e.target.value })}
-            className="w-full rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+            className="w-full rounded border border-border bg-surface px-3 py-2.5 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           />
         </L>
         <L label="canonical field">
@@ -145,7 +145,7 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
             placeholder="sqft"
             value={draft.canonical_field}
             onChange={(e) => setDraft({ ...draft, canonical_field: e.target.value })}
-            className="w-full rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+            className="w-full rounded border border-border bg-surface px-3 py-2.5 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           />
         </L>
         <L label="external field">
@@ -154,7 +154,7 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
             placeholder="cf_abc123"
             value={draft.external_field}
             onChange={(e) => setDraft({ ...draft, external_field: e.target.value })}
-            className="w-full rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+            className="w-full rounded border border-border bg-surface px-3 py-2.5 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           />
         </L>
         <L label="type">
@@ -166,7 +166,7 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
                 external_field_type: e.target.value as FieldMapping["external_field_type"],
               })
             }
-            className="w-full rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+            className="w-full rounded border border-border bg-surface px-3 py-2.5 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           >
             {FIELD_TYPES.map((t) => (
               <option key={t} value={t}>
@@ -178,7 +178,7 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
         <button
           type="submit"
           disabled={busy}
-          className="rounded bg-signal px-3 py-1.5 text-xs font-semibold text-zinc-950 disabled:opacity-40"
+          className="rounded bg-signal px-3 py-2.5 text-sm font-semibold text-zinc-950 disabled:opacity-40"
         >
           Save mapping
         </button>
@@ -190,7 +190,7 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
 function L({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="font-mono text-xs uppercase tracking-wider text-zinc-400">
+      <span className="font-mono text-sm uppercase tracking-wider text-zinc-400">
         {label}
       </span>
       <div className="mt-1">{children}</div>

@@ -43,7 +43,7 @@ export default function ActivityPanel({ clientId }: { clientId: string }) {
           aria-label="Activity window"
           value={windowDays}
           onChange={(e) => setWindowDays(Number(e.target.value))}
-          className="rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+          className="rounded border border-border bg-surface px-3 py-2.5 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
         >
           {[7, 30, 90].map((d) => (
             <option key={d} value={d}>
@@ -83,7 +83,7 @@ export default function ActivityPanel({ clientId }: { clientId: string }) {
       )}
 
       <div>
-        <h3 className="mb-2 font-mono text-xs uppercase tracking-[0.15em] text-signal">
+        <h3 className="mb-2 font-mono text-sm uppercase tracking-[0.15em] text-signal">
           Recent routing decisions
         </h3>
         {!log ? (
@@ -93,7 +93,7 @@ export default function ActivityPanel({ clientId }: { clientId: string }) {
         ) : (
           <div className="overflow-x-auto rounded-lg border border-border">
             <table className="w-full text-left text-sm">
-              <thead className="bg-surface font-mono text-xs uppercase tracking-wider text-zinc-400">
+              <thead className="bg-surface font-mono text-sm uppercase tracking-wider text-zinc-400">
                 <tr>
                   <th className="px-3 py-2">When</th>
                   <th className="px-3 py-2">Decision</th>
