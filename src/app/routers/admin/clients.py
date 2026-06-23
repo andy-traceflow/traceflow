@@ -16,7 +16,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.db import get_service_connection
-from app.services.admin_auth import AdminInfo, require_admin_user
+from app.services.admin_auth import AdminInfo, forbid_demo_writes, require_admin_user
 from app.services.audit import record_audit_event
 
 from .schemas import (
@@ -29,7 +29,7 @@ from .schemas import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(dependencies=[Depends(require_admin_user)])
+router = APIRouter(dependencies=[Depends(require_admin_user), Depends(forbid_demo_writes)])
 
 # Columns selected for the config payload — explicit list (clients.updated_at
 # would collide with client_configs.updated_at under SELECT *).

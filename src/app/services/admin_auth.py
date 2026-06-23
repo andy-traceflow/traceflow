@@ -43,7 +43,8 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import get_settings
-from app.db import get_service_connection
+from app.db import get_service_connection, set_demo
+from app.demo import DEMO_ADMIN_NAME, DEMO_EMAIL
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,18 @@ async def require_admin_user(
     except ValueError as e:
         raise HTTPException(status_code=401, detail="Invalid admin token") from e
 
+    # Demo session: a demo-role token (minted by /api/demo-login, only when
+    # DEMO_MODE is on) is confined to the in-memory FakeConn and never loads a
+    # real admin_users row. set_demo(True) flips get_service_connection() to the
+    # fake connection for the rest of this request. Gated on BOTH the role claim
+    # AND demo_mode, so the demo identity is inert anywhere demo mode is off
+    # (it falls through and 401s as an unknown admin).
+    if payload.get("role") == "demo" and settings.demo_mode:
+        set_demo(True)
+        return AdminInfo(id=admin_id, email=DEMO_EMAIL, name=DEMO_ADMIN_NAME, role="demo")
+    # Real request — clear any stale demo flag inherited on a reused task.
+    set_demo(False)
+
     async with get_service_connection() as conn:
         row = await conn.fetchrow(
             """
@@ -183,6 +196,21 @@ async def require_admin_user(
         role=row["role"],
         last_login_at=row["last_login_at"],
     )
+
+
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+async def forbid_demo_writes(
+    request: Request, admin: AdminInfo = Depends(require_admin_user)
+) -> None:
+    """Router dependency: a demo-role session may only read. Blocks every
+    mutating verb with a 403 — the hard stop that keeps the public demo from
+    e.g. firing leads.py's repush at a real CRM. Real roles pass through.
+    Depends on require_admin_user (cached per request), so the gate still runs
+    exactly once."""
+    if admin.role == "demo" and request.method not in _SAFE_METHODS:
+        raise HTTPException(status_code=403, detail="This is a read-only demo")
 
 
 # ===========================================================================

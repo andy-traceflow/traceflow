@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     admin_jwt_secret: str = ""
     allowed_origins: str = ""
 
+    # Demo mode — when true, serves a public no-login, read-only copy of the
+    # admin UI at /demo backed entirely by in-memory fixtures (no DB access).
+    # Web service only; never set on the cron services. See ADR / routers/demo.py.
+    demo_mode: bool = False
+
     # Observability
     sentry_dsn: str = ""
 

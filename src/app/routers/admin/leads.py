@@ -19,7 +19,7 @@ from app.adapters.registry import get_adapter
 from app.db import get_service_connection
 from app.models.client_config import ClientConfig
 from app.models.lead import Lead, LeadOutcome
-from app.services.admin_auth import AdminInfo, require_admin_user
+from app.services.admin_auth import AdminInfo, forbid_demo_writes, require_admin_user
 from app.services.audit import record_audit_event
 
 from .schemas import (
@@ -34,7 +34,7 @@ from .schemas import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(dependencies=[Depends(require_admin_user)])
+router = APIRouter(dependencies=[Depends(require_admin_user), Depends(forbid_demo_writes)])
 
 _CLASSIFICATION_FILTER = "^(potential_lead|existing_customer|known_non_lead|spam|all)$"
 

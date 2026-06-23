@@ -23,7 +23,7 @@ from starlette.types import Scope
 from app.config import get_settings
 from app.db import close_pool, init_pool
 from app.middleware.tenant_resolver import tenant_resolver_middleware
-from app.routers import admin, calculator, kb, kb_export
+from app.routers import admin, calculator, demo, kb, kb_export
 from app.webhooks import crm, generic, shopify, twilio
 
 logger = logging.getLogger(__name__)
@@ -80,6 +80,10 @@ app.include_router(calculator.router)
 # Founder-only admin — cross-tenant, bypasses RLS, separate auth scope
 app.include_router(admin.router)
 
+# Public demo bootstrap (POST /api/demo-login). The route gates itself on
+# DEMO_MODE at request time, so it's safe to register unconditionally.
+app.include_router(demo.router)
+
 # Admin SPA (admin-ui/, built into src/app/static/admin). Static files are
 # public by design — the SPA renders its login screen until /api/admin/login
 # succeeds; all data sits behind the admin JWT. Mounted conditionally so dev
@@ -110,6 +114,12 @@ class _AdminStaticFiles(StaticFiles):
 _ADMIN_UI_DIR = Path(__file__).parent / "static" / "admin"
 if _ADMIN_UI_DIR.is_dir():
     app.mount("/admin", _AdminStaticFiles(directory=_ADMIN_UI_DIR, html=True), name="admin-ui")
+    # DEMO_MODE: serve the SAME bundle at /demo. The SPA detects the /demo path
+    # and auto-logs-in via /api/demo-login (read-only). Vite bakes base=/admin/,
+    # so its assets resolve to /admin/assets/* — already served above, same origin.
+    if _settings.demo_mode:
+        app.mount("/demo", _AdminStaticFiles(directory=_ADMIN_UI_DIR, html=True), name="demo-ui")
+        logger.info("DEMO_MODE on — public read-only demo mounted at /demo")
 else:  # pragma: no cover - depends on whether the bundle was built
     logger.info("admin SPA bundle not found at %s — /admin not mounted", _ADMIN_UI_DIR)
 

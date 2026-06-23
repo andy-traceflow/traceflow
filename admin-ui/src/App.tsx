@@ -1,12 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, clearToken, getToken, setUnauthorizedHandler, type AdminMe } from "./api";
+import {
+  api,
+  clearToken,
+  demoLogin,
+  getToken,
+  isDemo,
+  setToken,
+  setUnauthorizedHandler,
+  type AdminMe,
+} from "./api";
 import Login from "./Login";
 import Shell from "./Shell";
 
-/** Auth state machine: probing (token exists, validating) → in | out. */
+/** Auth state machine: probing (token exists / demo bootstrapping) → in | out.
+ *  At /demo we auto-authenticate via /api/demo-login and never show Login. */
 export default function App() {
   const [me, setMe] = useState<AdminMe | null>(null);
-  const [probing, setProbing] = useState<boolean>(!!getToken());
+  const [probing, setProbing] = useState<boolean>(!!getToken() || isDemo);
 
   const logout = useCallback(() => {
     clearToken();
@@ -15,11 +25,26 @@ export default function App() {
 
   useEffect(() => {
     setUnauthorizedHandler(() => setMe(null));
-    if (!getToken()) return;
-    api<AdminMe>("/me")
-      .then(setMe)
-      .catch(() => clearToken())
-      .finally(() => setProbing(false));
+
+    const existing = getToken();
+    if (existing) {
+      api<AdminMe>("/me")
+        .then(setMe)
+        .catch(() => clearToken())
+        .finally(() => setProbing(false));
+      return;
+    }
+
+    // Demo: bootstrap a read-only session instead of showing the login form.
+    if (isDemo) {
+      demoLogin()
+        .then((r) => {
+          setToken(r.access_token);
+          setMe(r.admin);
+        })
+        .catch(() => clearToken()) // fall through to the (rare) login fallback
+        .finally(() => setProbing(false));
+    }
   }, []);
 
   if (probing) {

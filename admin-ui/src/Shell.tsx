@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type AdminMe, type ClientItem } from "./api";
+import { api, isDemo, type AdminMe, type ClientItem } from "./api";
 import { CLIENT_STATUS_LABELS, CLIENT_TIER_LABELS, labelFor } from "./labels";
 import ConfigPanel from "./panels/ConfigPanel";
 import LeadsPanel from "./panels/LeadsPanel";
@@ -29,6 +29,18 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
 
   return (
     <div className="mx-auto min-h-screen w-full max-w-[1680px] px-6 lg:px-8 2xl:px-12 pb-16">
+      {isDemo && (
+        <div
+          role="status"
+          className="mt-3 flex flex-wrap items-center gap-2 rounded border border-signal/30 bg-signal/10 px-3 py-2 font-mono text-xs text-signal"
+        >
+          <span className="inline-block h-2 w-2 rounded-full bg-signal" aria-hidden="true" />
+          <span className="font-semibold uppercase tracking-wider">Demo · read-only</span>
+          <span className="text-signal/80">
+            Sample data — this is a live portfolio preview of the TraceFlow admin console. Edits are disabled.
+          </span>
+        </div>
+      )}
       <header className="flex flex-wrap items-center gap-3 border-b border-border py-3">
         <h1 className="font-mono text-base uppercase tracking-[0.2em] text-signal">
           TraceFlow Admin
@@ -54,12 +66,14 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
         )}
         <div className="ml-auto flex items-center gap-3">
           <span className="font-mono text-xs text-zinc-400">{me.email}</span>
-          <button
-            onClick={onLogout}
-            className="rounded border border-border px-3 py-2 font-mono text-sm text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
-          >
-            Log out
-          </button>
+          {!isDemo && (
+            <button
+              onClick={onLogout}
+              className="rounded border border-border px-3 py-2 font-mono text-sm text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
+            >
+              Log out
+            </button>
+          )}
         </div>
       </header>
 

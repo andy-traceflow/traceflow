@@ -18,14 +18,14 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.db import get_service_connection
-from app.services.admin_auth import AdminInfo, require_admin_user
+from app.services.admin_auth import AdminInfo, forbid_demo_writes, require_admin_user
 from app.services.audit import record_audit_event
 
 from .schemas import FieldMappingIn, FieldMappingOut
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(dependencies=[Depends(require_admin_user)])
+router = APIRouter(dependencies=[Depends(require_admin_user), Depends(forbid_demo_writes)])
 
 
 @router.get("/clients/{client_id}/field-mappings", response_model=list[FieldMappingOut])

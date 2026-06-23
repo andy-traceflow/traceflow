@@ -12,6 +12,10 @@ services:
         value: production
       - key: PYTHON_VERSION
         value: "3.12"
+      # Public read-only demo at /demo (web service ONLY — never on the crons
+      # below, which must operate on real tenant data, not demo fixtures).
+      - key: DEMO_MODE
+        value: "true"
       - fromGroup: traceflow-secrets
 
   - type: cron

@@ -1,6 +1,14 @@
 /** Fetch wrapper + token store for the admin API (same-origin /api/admin). */
 
-const TOKEN_KEY = "tf_admin_token";
+/** True when the SPA is served at the public demo path (/demo). Demo sessions
+ *  are read-only and auto-authenticated (see App.tsx + /api/demo-login). */
+export const isDemo =
+  typeof window !== "undefined" && window.location.pathname.startsWith("/demo");
+
+// Distinct storage keys so an /admin session and a /demo session on the same
+// origin never share a token — a real owner token must never end up driving the
+// demo shell, nor a demo token the real admin.
+const TOKEN_KEY = isDemo ? "tf_demo_token" : "tf_admin_token";
 
 export function getToken(): string | null {
   return sessionStorage.getItem(TOKEN_KEY);
@@ -32,12 +40,21 @@ export async function api<T>(
   path: string,
   options: { method?: string; body?: unknown } = {},
 ): Promise<T> {
+  const method = options.method ?? "GET";
+
+  // The deployed demo is read-only. Short-circuit any mutation client-side with
+  // a friendly message — the server also blocks it (403), but this avoids the
+  // wasted round-trip and a confusing error toast.
+  if (isDemo && method !== "GET") {
+    throw new ApiError(403, "This is a read-only demo — changes are disabled here.");
+  }
+
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
   const resp = await fetch(`/api/admin${path}`, {
-    method: options.method ?? "GET",
+    method,
     headers,
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
   });
@@ -61,6 +78,17 @@ export async function api<T>(
     throw new ApiError(resp.status, detail);
   }
   return (await resp.json()) as T;
+}
+
+/** Bootstrap a read-only demo session — no credentials. Hits /api/demo-login
+ *  directly (it's mounted outside the /api/admin base path). */
+export async function demoLogin(): Promise<LoginResponse> {
+  const resp = await fetch("/api/demo-login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!resp.ok) throw new ApiError(resp.status, "The demo is unavailable right now.");
+  return (await resp.json()) as LoginResponse;
 }
 
 // ---- shapes (mirror routers/admin/schemas.py — only the fields the UI reads)

@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 _pool: asyncpg.Pool | None = None
 _current_tenant: ContextVar[UUID | None] = ContextVar("_current_tenant", default=None)
+# Set per-request by require_admin_user when a demo-role token is presented (and
+# DEMO_MODE is on). While true, get_service_connection() yields an in-memory
+# FakeConn instead of a real pool connection — the demo never touches the DB.
+_demo: ContextVar[bool] = ContextVar("_demo", default=False)
 
 
 async def _register_codecs(conn: asyncpg.Connection) -> None:
@@ -78,6 +82,15 @@ def set_current_tenant(client_id: UUID | None) -> None:
 
 def get_current_tenant() -> UUID | None:
     return _current_tenant.get()
+
+
+def set_demo(flag: bool) -> None:
+    """Mark (or clear) the current request as a demo-role request."""
+    _demo.set(flag)
+
+
+def get_demo() -> bool:
+    return _demo.get()
 
 
 @asynccontextmanager
@@ -142,7 +155,19 @@ async def get_service_connection() -> AsyncIterator[asyncpg.Connection]:
     audit_log (which has no tenant policy by design). Stays on the
     default `postgres` role — we do not `SET ROLE authenticated`. Use
     sparingly: bypassing RLS is the most dangerous tool we have.
+
+    Demo-role requests never reach the database: when the `_demo` ContextVar
+    is set (by require_admin_user, gated on DEMO_MODE), this yields an
+    in-memory FakeConn over canned fixtures instead. Checked once at entry so
+    a mid-block reset can't swap connection types underneath a caller.
     """
+    if _demo.get():
+        from app.demo import fake_service_connection  # local import avoids cycle
+
+        async with fake_service_connection() as conn:
+            yield conn
+        return
+
     if _pool is None:
         raise RuntimeError("DB pool not initialized — call init_pool() first")
     async with _pool.acquire() as conn:
