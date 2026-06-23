@@ -33,8 +33,8 @@ def _lid(slug: str, i: int) -> UUID:
     return uuid5(NAMESPACE_URL, f"traceflow-demo/lead/{slug}/{i}")
 
 
-def _mid(slug: str, i: int, j: int) -> UUID:
-    return uuid5(NAMESPACE_URL, f"traceflow-demo/msg/{slug}/{i}/{j}")
+def _mid(lead_id: UUID, j: int) -> UUID:
+    return uuid5(NAMESPACE_URL, f"traceflow-demo/msg/{lead_id}/{j}")
 
 
 # ===========================================================================
@@ -71,19 +71,190 @@ _SERVICE_TYPES = {
     "brightline-surfaces": ["countertop", "tile_floor"],
 }
 
+# How many "generic" potential leads each client gets, on top of the 3 hero
+# leads + 3 non-lead classifications + 1 test row. Varied so the switcher's
+# leads/30d and each Leads list look like real, differently-sized businesses.
+_GENERIC_LEADS = {
+    "summit-stone": 22,
+    "coastal-counters": 17,
+    "ironwood-floors": 13,
+    "desert-tile": 9,
+    "granite-peak": 28,
+    "lakeside-cabinets": 6,
+    "metro-epoxy": 15,
+    "vista-resurfacing": 19,
+    "heritage-marble": 4,
+    "brightline-surfaces": 3,
+}
+
+# (qualification_status, score) cycled across generic leads so a client's
+# stream is a realistic mix of engaged / in-progress / dead-end callers —
+# which in turn drives how long each lead's SMS thread is (see _conversation).
+_GENERIC_VARIANTS: list[tuple[str, int]] = [
+    ("qualifying", 62),
+    ("qualified", 84),
+    ("unqualified", 28),
+    ("qualifying", 71),
+    ("qualified", 90),
+    ("unqualified", 35),
+    ("qualifying", 58),
+]
+
 _NAMES = [
     "Maria Lopez", "Tom Becker", "Priya Nair", "James Whitfield", "Sofia Romano",
     "Derek Chen", "Hannah Brooks", "Luis Alvarez", "Grace Okafor", "Nathan Reed",
     "Emily Carter", "Omar Haddad", "Rachel Kim", "Victor Santos", "Chloe Bennett",
     "Marcus Webb", "Ava Thompson", "Diego Morales", "Lena Petrov", "Samuel Ortiz",
+    "Olivia Hayes", "Andre Dubois", "Mei Lin", "Carlos Vega", "Fiona Walsh",
+    "Jamal Carter", "Ingrid Solberg", "Pedro Ramos", "Tara Singh", "Eli Foster",
 ]
 
 _BUDGETS = ["under_5k", "5k-15k", "15k-50k", "50k_plus"]
 _TIMEFRAMES = ["this_week", "this_month", "next_quarter", "just_researching"]
 
 
+# ===========================================================================
+# Conversation generation — varied SMS threads from template pools so no two
+# leads read the same. Outbound = AI auto-reply/qualifier; inbound = caller.
+# ===========================================================================
+
+_INBOUND_OPENERS = [
+    "Hi! We're looking to get our {svc} redone — about {sqft} sq ft. Any idea on cost?",
+    "Hey, yes we just called about {svc}. Trying to get a ballpark before we commit.",
+    "Thanks for getting back to me! We need {svc} done as part of a remodel.",
+    "Hi — do you handle {svc}? We'd want it {timeframe}.",
+    "Got your text. We're redoing the kitchen and need new {svc}. Can someone come measure?",
+    "Yes! Looking for {svc} in the master bath. How soon could you start?",
+    "Hi there, hoping for a quote on {svc}, roughly {sqft} sq ft.",
+    "Appreciate the quick reply — we've been meaning to tackle this {svc} project for a while.",
+]
+
+_OUTBOUND_QUALIFIERS = [
+    "Happy to help! Roughly what's your budget, and when are you hoping to start?",
+    "Great — do you know the approximate square footage, and which material you're leaning toward?",
+    "We can definitely take care of that. What's your timeline, and a rough budget range?",
+    "Awesome. Are you replacing existing {svc} or is this a new install? Any budget in mind?",
+    "Glad to help! What part of town are you in, and when would you like this done by?",
+    "For sure — what's your budget looking like, and is there a deadline you're working toward?",
+]
+
+_INBOUND_DETAILS = [
+    "Probably {budget}. We'd like it wrapped up {timeframe}.",
+    "Budget's {budget}, and timeline is {timeframe} ideally.",
+    "Maybe {budget}? Not in a huge rush — {timeframe}.",
+    "We're somewhat flexible, {budget} ish. Hoping to start {timeframe}.",
+    "Looking at {budget}. Timeline-wise, {timeframe}.",
+    "Around {budget} if the quality's there. We'd want it {timeframe}.",
+]
+
+_OUTBOUND_BOOKINGS = [
+    "Perfect — I can have an estimator reach out today to set up a free measure. What time works?",
+    "That works! Want me to get you on the schedule for an on-site quote this week?",
+    "Got it — I'll have the {business} team call to lock in a visit. Mornings or afternoons?",
+    "Sounds great. I'll pass this to our project lead and we'll get a detailed quote over to you.",
+    "Awesome — we can usually get someone out within a few days. What's the best time to reach you?",
+]
+
+_INBOUND_CONFIRMS = [
+    "Afternoons are best, thanks!",
+    "Mornings work great — talk soon.",
+    "Sounds good, looking forward to it!",
+    "Perfect, thank you!",
+    "Great, I'll keep an eye out for the call.",
+]
+
+_INBOUND_EXISTING = [
+    "Hi, we're already customers — just had a question about our recent install.",
+    "Oh hey, we had {svc} done by you last year. Wanted to ask about a touch-up.",
+    "We're existing clients — calling about a warranty question, not a new job.",
+]
+
+_OUTBOUND_EXISTING = [
+    "Of course! Let me get someone from the team to follow up with you directly.",
+    "Happy to help — I'll have your account manager reach out today.",
+    "Thanks for being a customer! Passing this along to our service team now.",
+]
+
+
+def _pick(pool: list[str], seed: int, offset: int) -> str:
+    return pool[(seed + offset) % len(pool)]
+
+
+def _h_budget(b: str | None) -> str:
+    return {
+        "under_5k": "under $5k", "5k-15k": "around $5–15k",
+        "15k-50k": "$15–50k", "50k_plus": "$50k or so",
+    }.get(b or "", "flexible")
+
+
+def _h_time(t: str | None) -> str:
+    return {
+        "this_week": "this week", "this_month": "this month",
+        "next_quarter": "in the next couple months", "just_researching": "just researching for now",
+    }.get(t or "", "soon")
+
+
+def _h_svc(s: str | None) -> str:
+    return (s or "the work").replace("_", " ")
+
+
 def _greeting(name: str) -> str:
     return f"Hi, this is {name} — sorry we missed your call! What can we help you with today?"
+
+
+def _msg(lead: dict[str, Any], j: int, direction: str, body: str,
+         t0: datetime, minutes: int, prompt_version: str | None = None) -> dict[str, Any]:
+    return {
+        "id": _mid(lead["id"], j),
+        "direction": direction,
+        "channel": "sms",
+        "body": body,
+        "ai_generated": direction == "outbound",
+        "prompt_version": prompt_version,
+        "created_at": t0 + timedelta(minutes=minutes),
+    }
+
+
+def _conversation(name: str, lead: dict[str, Any], seed: int) -> list[dict[str, Any]]:
+    """Build a varied SMS thread for one lead. Length tracks how far the caller
+    got: spam/vendor/test → none; unqualified → just the auto-reply (ghosted);
+    qualifying → a back-and-forth; qualified/high_value → through to booking."""
+    cls = lead["classification"]
+    if cls in ("spam", "known_non_lead") or lead["is_test"]:
+        return []  # spam dropped, vendor greeting suppressed, test rows quiet
+
+    t0 = lead["created_at"]
+    msgs = [_msg(lead, 0, "outbound", _greeting(name), t0, 1, "greeting-v2")]
+
+    if cls == "existing_customer":
+        svc = _h_svc(lead["service_type"])
+        msgs.append(_msg(lead, 1, "inbound", _pick(_INBOUND_EXISTING, seed, 0).format(svc=svc), t0, 6))
+        msgs.append(_msg(lead, 2, "outbound", _pick(_OUTBOUND_EXISTING, seed, 0), t0, 8, "qualifier-v3"))
+        return msgs
+
+    if lead["qualification_status"] == "unqualified":
+        return msgs  # auto-reply sent, caller never wrote back
+
+    svc = _h_svc(lead["service_type"])
+    sqft = int(lead["sqft"] or 0)
+    budget = _h_budget(lead["budget_range"])
+    tf = _h_time(lead["timeframe"])
+    msgs.append(_msg(lead, 1, "inbound",
+                     _pick(_INBOUND_OPENERS, seed, 1).format(svc=svc, sqft=sqft, timeframe=tf), t0, 8))
+    msgs.append(_msg(lead, 2, "outbound",
+                     _pick(_OUTBOUND_QUALIFIERS, seed, 2).format(svc=svc), t0, 9, "qualifier-v3"))
+    msgs.append(_msg(lead, 3, "inbound",
+                     _pick(_INBOUND_DETAILS, seed, 1).format(budget=budget, timeframe=tf), t0, 15))
+    if lead["qualification_status"] in ("qualified", "high_value"):
+        msgs.append(_msg(lead, 4, "outbound",
+                         _pick(_OUTBOUND_BOOKINGS, seed, 3).format(business=name), t0, 18, "qualifier-v3"))
+        msgs.append(_msg(lead, 5, "inbound", _pick(_INBOUND_CONFIRMS, seed, 2), t0, 27))
+    return msgs
+
+
+# ===========================================================================
+# Rows
+# ===========================================================================
 
 
 def _config_row(slug: str, name: str, tier: str, status: str, crm: str | None,
@@ -185,8 +356,10 @@ def _lead(slug: str, i: int, **overrides: Any) -> dict[str, Any]:
 
 
 def _build_leads(slug: str, crm: str | None) -> list[dict[str, Any]]:
-    """A varied lead stream per client: a couple of hero leads, a spread of
-    generic potential leads, plus one of each non-lead classification."""
+    """A varied lead stream per client: 3 hero leads, a per-client-sized spread
+    of generic potential leads (mixed statuses), then one of each non-lead
+    classification + a test row. Order is kept stable so _build_routing can
+    reference heroes (leads[0:2]) and the spam row (leads[-2])."""
     def ext(i: int) -> str:
         return f"{(crm or 'crm')[:2]}-{_ROSTER_INDEX[slug]}{i:03d}"
 
@@ -226,75 +399,42 @@ def _build_leads(slug: str, crm: str | None) -> list[dict[str, Any]]:
             outcome_recorded_at=NOW - timedelta(days=1),
         ),
     ]
-    # A spread of generic potential leads.
-    leads.extend(_lead(slug, i) for i in range(4, 12))
-    # Non-lead classifications (kept out of recovery metrics).
+    # Per-client spread of generic potential leads, statuses cycled for variety.
+    n = _GENERIC_LEADS[slug]
+    for k in range(n):
+        status, score = _GENERIC_VARIANTS[k % len(_GENERIC_VARIANTS)]
+        leads.append(_lead(slug, 4 + k, qualification_status=status, qualification_score=score))
+
+    # Non-lead classifications + a test row, indexed AFTER the generics so their
+    # uuid5 ids never collide with a generic lead's.
+    base = 4 + n
     leads.append(_lead(
-        slug, 12, classification="existing_customer",
-        qualification_status="non_lead_contact",
+        slug, base, classification="existing_customer", qualification_status="non_lead_contact",
     ))
     leads.append(_lead(
-        slug, 13, classification="known_non_lead",
+        slug, base + 1, classification="known_non_lead",
         qualification_status="non_lead_contact", contact_name=None,
         notes="Vendor — on allowlist.",
     ))
     leads.append(_lead(
-        slug, 14, classification="spam", qualification_status="spam",
+        slug, base + 2, classification="spam", qualification_status="spam",
         contact_name=None, qualification_score=None,
         raw_payload={"CallSid": f"CA{_ROSTER_INDEX[slug]:02d}-spam"},
     ))
-    # A test row (excluded from metrics + default lead views).
-    leads.append(_lead(slug, 15, contact_name="Test Lead", is_test=True))
+    leads.append(_lead(slug, base + 3, contact_name="Test Lead", is_test=True))
     return leads
 
 
 def _build_messages(
     slug: str, name: str, leads: list[dict[str, Any]]
 ) -> dict[UUID, list[dict[str, Any]]]:
-    """A short SMS thread on the first hero lead; nothing on the rest."""
-    hero = leads[0]
-    return {
-        hero["id"]: [
-            {
-                "id": _mid(slug, 1, 0),
-                "direction": "outbound",
-                "channel": "sms",
-                "body": _greeting(name),
-                "ai_generated": True,
-                "prompt_version": "greeting-v2",
-                "created_at": hero["created_at"] + timedelta(minutes=1),
-            },
-            {
-                "id": _mid(slug, 1, 1),
-                "direction": "inbound",
-                "channel": "sms",
-                "body": "Hi! Looking to redo our kitchen countertops, about 45 sqft. "
-                        "What would that run?",
-                "ai_generated": False,
-                "prompt_version": None,
-                "created_at": hero["created_at"] + timedelta(minutes=9),
-            },
-            {
-                "id": _mid(slug, 1, 2),
-                "direction": "outbound",
-                "channel": "sms",
-                "body": "Great project! Are you thinking quartz, granite, or something "
-                        "else — and what's your rough budget range?",
-                "ai_generated": True,
-                "prompt_version": "qualifier-v3",
-                "created_at": hero["created_at"] + timedelta(minutes=10),
-            },
-            {
-                "id": _mid(slug, 1, 3),
-                "direction": "inbound",
-                "channel": "sms",
-                "body": "Quartz, probably $15-20k. We'd want it done this month.",
-                "ai_generated": False,
-                "prompt_version": None,
-                "created_at": hero["created_at"] + timedelta(minutes=14),
-            },
-        ]
-    }
+    """A varied SMS thread per eligible lead (see _conversation)."""
+    out: dict[UUID, list[dict[str, Any]]] = {}
+    for pos, lead in enumerate(leads):
+        thread = _conversation(name, lead, seed=pos + _ROSTER_INDEX[slug])
+        if thread:
+            out[lead["id"]] = thread
+    return out
 
 
 def _build_routing(
