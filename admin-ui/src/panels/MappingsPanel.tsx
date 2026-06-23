@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api, type FieldMapping } from "../api";
+import { FIELD_TYPE_LABELS, labelFor } from "../labels";
 
 const FIELD_TYPES = ["standard", "custom_field", "custom_property", "column"] as const;
 const EMPTY: FieldMapping = {
@@ -100,7 +101,7 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
                   </td>
                   <td className="px-3 py-2 font-mono text-xs">{m.external_field}</td>
                   <td className="px-3 py-2 font-mono text-xs text-zinc-400">
-                    {m.external_field_type}
+                    {labelFor(FIELD_TYPE_LABELS, m.external_field_type)}
                   </td>
                   <td className="px-3 py-2 text-xs text-zinc-400">{m.notes ?? ""}</td>
                   <td className="px-3 py-2">
@@ -169,7 +170,7 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
           >
             {FIELD_TYPES.map((t) => (
               <option key={t} value={t}>
-                {t}
+                {labelFor(FIELD_TYPE_LABELS, t)}
               </option>
             ))}
           </select>

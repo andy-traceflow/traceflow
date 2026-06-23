@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
 import { api, type RoutingActivity, type RoutingLogItem } from "../api";
+import { CLASSIFICATION_LABELS, ROUTING_DECISION_LABELS, humanize, labelFor } from "../labels";
 
-const BUCKET_LABELS: Record<string, string> = {
-  potential_lead: "Genuine leads",
-  existing_customer: "Existing customers",
-  known_non_lead: "Vendors / non-leads",
-  spam: "Spam",
-  active_conversation: "Mid-conversation",
-};
+/** Routing buckets in display order; labels come from the shared CLASSIFICATION_LABELS. */
+const ROUTING_BUCKETS = [
+  "potential_lead",
+  "existing_customer",
+  "known_non_lead",
+  "spam",
+  "active_conversation",
+] as const;
 
 const fmtDate = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
@@ -61,10 +63,10 @@ export default function ActivityPanel({ clientId }: { clientId: string }) {
         <>
           <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
             <Stat label="Total missed calls" value={String(activity.total_calls)} accent />
-            {Object.entries(BUCKET_LABELS).map(([key, label]) => (
+            {ROUTING_BUCKETS.map((key) => (
               <Stat
                 key={key}
-                label={label}
+                label={labelFor(CLASSIFICATION_LABELS, key)}
                 value={String(activity.breakdown[key] ?? 0)}
               />
             ))}
@@ -107,14 +109,14 @@ export default function ActivityPanel({ clientId }: { clientId: string }) {
                       {fmtDate(item.created_at)}
                     </td>
                     <td className="px-3 py-2 font-mono text-xs text-zinc-200">
-                      {item.routing_decision ?? "—"}
+                      {labelFor(ROUTING_DECISION_LABELS, item.routing_decision)}
                     </td>
                     <td className="px-3 py-2 font-mono text-xs text-zinc-400">
                       {item.caller ?? "—"}
                     </td>
                     <td className="px-3 py-2 text-xs text-zinc-400">{item.reason ?? "—"}</td>
                     <td className="px-3 py-2 font-mono text-xs text-zinc-400">
-                      {item.event_type}
+                      {humanize(item.event_type)}
                     </td>
                   </tr>
                 ))}

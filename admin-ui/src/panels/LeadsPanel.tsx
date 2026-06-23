@@ -6,6 +6,15 @@ import {
   type LeadItem,
   type LeadList,
 } from "../api";
+import {
+  CLASSIFICATION_LABELS,
+  CLASSIFICATION_SINGULAR_LABELS,
+  INTENT_LABELS,
+  OUTCOME_LABELS,
+  OUTCOME_SOURCE_LABELS,
+  QUALIFICATION_STATUS_LABELS,
+  labelFor,
+} from "../labels";
 
 const CLASSIFICATIONS = ["potential_lead", "existing_customer", "known_non_lead", "spam", "all"];
 
@@ -46,7 +55,7 @@ export default function LeadsPanel({ clientId }: { clientId: string }) {
         >
           {CLASSIFICATIONS.map((c) => (
             <option key={c} value={c}>
-              {c}
+              {labelFor(CLASSIFICATION_LABELS, c)}
             </option>
           ))}
         </select>
@@ -71,7 +80,9 @@ export default function LeadsPanel({ clientId }: { clientId: string }) {
 
       {leads && leads.data.length === 0 && (
         <p className="py-8 text-center text-sm text-zinc-400">
-          No {classification === "all" ? "" : classification.replace("_", " ")} leads yet.
+          {classification === "all"
+            ? "No leads yet."
+            : `No ${labelFor(CLASSIFICATION_LABELS, classification).toLowerCase()} yet.`}
         </p>
       )}
 
@@ -153,9 +164,9 @@ function LeadRow({ lead, onOpen }: { lead: LeadItem; onOpen: () => void }) {
       </td>
       <td className="px-3 py-2 font-mono text-xs">
         {lead.outcome === "won" ? (
-          <span className="text-success">won {money(lead.recovered_value)}</span>
+          <span className="text-success">{labelFor(OUTCOME_LABELS, lead.outcome)} {money(lead.recovered_value)}</span>
         ) : (
-          <span className="text-zinc-400">{lead.outcome}</span>
+          <span className="text-zinc-400">{labelFor(OUTCOME_LABELS, lead.outcome)}</span>
         )}
       </td>
       <td className="px-3 py-2 font-mono text-xs">
@@ -196,9 +207,9 @@ function LeadCard({ lead, onOpen }: { lead: LeadItem; onOpen: () => void }) {
         <span>{fmtDate(lead.created_at)}</span>
         {lead.service_type && <span>{lead.service_type}</span>}
         {lead.outcome === "won" ? (
-          <span className="text-success">won {money(lead.recovered_value)}</span>
+          <span className="text-success">{labelFor(OUTCOME_LABELS, lead.outcome)} {money(lead.recovered_value)}</span>
         ) : (
-          <span>{lead.outcome}</span>
+          <span>{labelFor(OUTCOME_LABELS, lead.outcome)}</span>
         )}
         {lead.external_id && <span className="text-success">pushed</span>}
         <span>{lead.message_count} msg</span>
@@ -219,7 +230,7 @@ function StatusBadge({ value }: { value: string }) {
         : "border-border-strong text-zinc-300";
   return (
     <span className={`rounded border px-1.5 py-0.5 font-mono text-xs ${tone}`}>
-      {value}
+      {labelFor(QUALIFICATION_STATUS_LABELS, value)}
     </span>
   );
 }
@@ -317,16 +328,16 @@ function LeadDrawer({
             </div>
 
             <div className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-surface/40 p-3 font-mono text-xs">
-              <Meta k="classification" v={lead.classification} />
-              <Meta k="status" v={lead.qualification_status} />
-              <Meta k="intent" v={lead.intent?.intent ?? "—"} />
+              <Meta k="classification" v={labelFor(CLASSIFICATION_SINGULAR_LABELS, lead.classification)} />
+              <Meta k="status" v={labelFor(QUALIFICATION_STATUS_LABELS, lead.qualification_status)} />
+              <Meta k="intent" v={labelFor(INTENT_LABELS, lead.intent?.intent)} />
               <Meta k="score" v={lead.qualification_score?.toString() ?? "—"} />
               <Meta k="service" v={lead.service_type ?? "—"} />
               <Meta k="budget" v={lead.budget_range ?? "—"} />
               <Meta k="sqft" v={lead.sqft?.toString() ?? "—"} />
               <Meta k="timeframe" v={lead.timeframe ?? "—"} />
-              <Meta k="outcome" v={`${lead.outcome} ${money(lead.recovered_value)}`} />
-              <Meta k="source" v={lead.outcome_source ?? "—"} />
+              <Meta k="outcome" v={`${labelFor(OUTCOME_LABELS, lead.outcome)} ${money(lead.recovered_value)}`} />
+              <Meta k="source" v={labelFor(OUTCOME_SOURCE_LABELS, lead.outcome_source)} />
               <Meta k="CRM id" v={lead.external_id ?? "not pushed"} />
               <Meta k="test lead" v={lead.is_test ? "yes" : "no"} />
             </div>
@@ -431,9 +442,9 @@ function OutcomeForm({
         onChange={(e) => setOutcome(e.target.value)}
         className="rounded border border-border bg-surface px-2 py-1.5 font-mono text-xs outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
       >
-        <option value="won">won</option>
-        <option value="lost">lost</option>
-        <option value="open">open</option>
+        <option value="won">{OUTCOME_LABELS.won}</option>
+        <option value="lost">{OUTCOME_LABELS.lost}</option>
+        <option value="open">{OUTCOME_LABELS.open}</option>
       </select>
       <input
         type="number"

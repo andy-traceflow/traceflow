@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type ClassificationConfig, type ClientConfig } from "../api";
+import { CLIENT_STATUS_LABELS, CLIENT_TIER_LABELS, SPAM_RISK_LABELS, labelFor } from "../labels";
 
 /** Editable subset — mirrors ClientConfigUpdate. Only drafted keys are sent. */
 type Draft = Partial<{
@@ -97,7 +98,7 @@ export default function ConfigPanel({ clientId }: { clientId: string }) {
       <div className="flex items-center gap-3">
         <h2 className="text-lg font-semibold text-zinc-100">{config.business_name}</h2>
         <span className="font-mono text-xs text-zinc-400">
-          {config.tier} · {config.status} · CRM: {config.crm_provider ?? "none"}
+          {labelFor(CLIENT_TIER_LABELS, config.tier)} · {labelFor(CLIENT_STATUS_LABELS, config.status)} · CRM: {config.crm_provider ?? "none"}
           {config.has_crm_credentials ? " (creds ✓)" : " (no creds)"} · webhooks:{" "}
           {config.webhook_integrations.join(", ") || "none"}
         </span>
@@ -166,9 +167,9 @@ export default function ConfigPanel({ clientId }: { clientId: string }) {
               }
               className="rounded border border-border bg-surface px-2 py-1 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
             >
-              <option value="low">low</option>
-              <option value="moderate">moderate</option>
-              <option value="high">high</option>
+              <option value="low">{SPAM_RISK_LABELS.low}</option>
+              <option value="moderate">{SPAM_RISK_LABELS.moderate}</option>
+              <option value="high">{SPAM_RISK_LABELS.high}</option>
             </select>
           </label>
         </div>

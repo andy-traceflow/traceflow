@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type AdminMe, type ClientItem } from "./api";
+import { CLIENT_STATUS_LABELS, CLIENT_TIER_LABELS, labelFor } from "./labels";
 import ConfigPanel from "./panels/ConfigPanel";
 import LeadsPanel from "./panels/LeadsPanel";
 import ActivityPanel from "./panels/ActivityPanel";
@@ -41,13 +42,13 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
           {clients.length === 0 && <option value="">no clients</option>}
           {clients.map((c) => (
             <option key={c.id} value={c.id}>
-              {c.business_name} · {c.status}
+              {c.business_name} · {labelFor(CLIENT_STATUS_LABELS, c.status)}
             </option>
           ))}
         </select>
         {selected && (
           <span className="font-mono text-xs text-zinc-400">
-            {selected.tier} · {selected.crm_provider ?? "no CRM"} · {selected.leads_30d}{" "}
+            {labelFor(CLIENT_TIER_LABELS, selected.tier)} · {selected.crm_provider ?? "no CRM"} · {selected.leads_30d}{" "}
             leads/30d
           </span>
         )}
