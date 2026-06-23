@@ -28,7 +28,7 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
   const selected = clients.find((c) => c.id === clientId) ?? null;
 
   return (
-    <div className="mx-auto min-h-screen max-w-6xl px-4 pb-16">
+    <div className="mx-auto min-h-screen w-full max-w-[1680px] px-6 lg:px-8 2xl:px-12 pb-16">
       <header className="flex flex-wrap items-center gap-3 border-b border-border py-3">
         <h1 className="font-mono text-xs uppercase tracking-[0.2em] text-signal">
           TraceFlow Admin

@@ -129,7 +129,7 @@ export default function MappingsPanel({ clientId }: { clientId: string }) {
 
       <form
         onSubmit={upsert}
-        className="grid grid-cols-1 items-end gap-2 rounded-lg border border-border bg-surface/40 p-3 sm:grid-cols-2 lg:grid-cols-5"
+        className="grid max-w-4xl grid-cols-1 items-end gap-2 rounded-lg border border-border bg-surface/40 p-3 sm:grid-cols-2 lg:grid-cols-5"
       >
         <L label="integration">
           <input

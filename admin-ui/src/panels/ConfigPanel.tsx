@@ -94,7 +94,7 @@ export default function ConfigPanel({ clientId }: { clientId: string }) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="max-w-5xl space-y-6">
       <div className="flex items-center gap-3">
         <h2 className="text-lg font-semibold text-zinc-100">{config.business_name}</h2>
         <span className="font-mono text-xs text-zinc-400">
