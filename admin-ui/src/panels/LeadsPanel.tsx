@@ -13,6 +13,7 @@ import {
   OUTCOME_LABELS,
   OUTCOME_SOURCE_LABELS,
   QUALIFICATION_STATUS_LABELS,
+  humanize,
   labelFor,
 } from "../labels";
 
@@ -316,7 +317,7 @@ function LeadDrawer({
                   {lead.contact_name ?? "Unknown caller"}
                 </h3>
                 <p className="font-mono text-xs text-zinc-400">
-                  {lead.phone} · {lead.source_system} · {fmtDate(lead.created_at)}
+                  {lead.phone} · {humanize(lead.source_system)} · {fmtDate(lead.created_at)}
                 </p>
               </div>
               <button
@@ -392,7 +393,7 @@ function LeadDrawer({
                     >
                       <p className="whitespace-pre-wrap">{m.body}</p>
                       <p className="mt-1 font-mono text-xs text-zinc-400">
-                        {m.direction}
+                        {humanize(m.direction)}
                         {m.ai_generated ? " · AI" : ""} · {fmtDate(m.created_at)}
                       </p>
                     </div>
