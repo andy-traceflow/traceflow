@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-06-22 — Admin-ui demo-polish pass (deployed) + prod demo-data seed (labeled TEST)
+
+### build: admin-ui demo-readiness + portfolio polish — `admin-ui/` only, no backend/API/schema change
+PRD-driven pass so the console reads as a product (prospect demos + a job-application artifact). Six small commits fast-forwarded to `main` (`7a949e2`→`2c90291`, pushed); Render auto-deploys `main`; bundle rebuilt into `src/app/static/admin/`.
+- **`labels.ts` (new — single source of truth):** every enum the UI renders routes through humanized maps (classification, qualification_status, outcome, intent, routing_decision, client tier/status, field-type, spam-risk, outcome-source) with a sentence-case `humanize()` fallback, so **no raw snake_case can reach the screen**. `ActivityPanel`'s local `BUCKET_LABELS` lifted into it. Audit caught snake_case beyond the PRD list: `founding_partner`/`full_stack` (tier — shown in switcher + Config header), `support_touch`/`non_lead_contact` (qual status), `source_system`, message `direction`.
+- **Copy:** sentence-case buttons/labels (Log out, Close, Record outcome, Edit/Delete, Loading…); dropped internal jargon ("Caller classification (lifecycle v2)" → "Caller classification", the "…denominator" line, "Audit-logged…"); empty state no longer references `scripts/onboard_client.py`; lead-drawer meta keys title-cased.
+- **Width:** Shell `max-w-6xl` → `max-w-[1680px]` + responsive padding (fills 1440p, not a narrow column); Config form capped `max-w-5xl`, Mappings add-form `max-w-4xl`, data tables full-width.
+- **Scale:** consistent one-notch bump — brand `text-base`, tabs/controls ~40px tap targets, section/field labels + table headers `text-sm`, primary lead name `text-base`; secondary metadata stays `text-xs`. Dark/signal-blue tokens extended (no hardcoded hex); the 6/17 a11y pass untouched.
+- Verified live via `dev_admin_preview.py` at 1920px (accessibility snapshots + computed styles, not screenshots): humanized labels across every panel, container `1680px`, tap targets `40px`, zero console errors; `tsc -b && vite build` green.
+
+### ops: prod Supabase seeded with demo data, labeled TEST
+Seeded `ienjxmyhttuzxoaeramo` via the Supabase MCP (`execute_sql`) so the live `/admin` demos as a populated multi-tenant op.
+- **12 demo clients** (`slug LIKE 'demo-%'`, `client_configs.feature_flags->>'demo_seed'='true'`) + configs, **228 leads**, 345 messages, 290 routing `events`, 20 field mappings. Metrics randomized server-side (`random()` / `generate_series`): ~70/11/10/8 classification mix, correlated qualification statuses, 69 won / ~$1.67M recovered, AI usage per cap.
+- Per the test-data convention everything is labeled **TEST** — business names `TEST — …`, lead names `TEST …`, **`is_test=true`**. Consequence: the Leads list hides them by default (toggle "Include test leads") and switcher `leads/30d`=0; Activity / Usage / Config / Mappings still populate. Distinct from the 3 pre-existing `test-%` fixtures by slug.
+- **Not real traction** — staged demo data. Purge before client #1 (children first, then `clients WHERE slug LIKE 'demo-%'`); full script in the `traceflow-demo-seed` ops note. Prod is still **free tier** (see the 6/17 ops note) — upgrade Supabase + Render before onboarding.
+
+---
+
 ## 2026-06-17 — Admin live in prod + production-grade UI pass (audit Phases 1–4) + atomic-deploy caching
 
 ### milestone: the self-hosted admin is deployed and live
