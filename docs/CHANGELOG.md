@@ -6,6 +6,30 @@
 
 ---
 
+## 2026-06-25 — Prod test-data purge + first live-pilot client + SMS-terms page
+
+### ops: prod Supabase wiped of all seeded demo/test data
+Purged all 15 seeded clients from prod (the 12 `demo-%` clients from the 6/22 seed + the 3 older `test-%` fixtures): **231 leads, 348 messages, 290 events, 20 field mappings, 481 client-scoped `audit_log` rows**. Run via the Supabase MCP as one statement — `DELETE FROM clients WHERE slug LIKE 'demo-%' OR slug LIKE 'test-%'` cascades to all 13 child tables (every client-scoped table is `ON DELETE CASCADE`); `audit_log` swept separately since it has a `client_id` column but no FK. Verified 0 rows across `clients/client_configs/leads/messages/events/mappings`; `admin_users` (andy@traceflow.app) and the 352 non-client audit rows (admin logins) preserved. Rationale: the portfolio demo now lives in-memory at `/demo` (DEMO_MODE, the 6/23 build), so prod no longer needs seeded data — clean slate before the first real client.
+
+### ops: first live-pilot client created (`test-live-pilot`)
+One client for a real LLR end-to-end test. Inserted via MCP: slug `test-live-pilot`, business_name "TEST — Live Pilot", `crm_provider=hubspot`, `twilio_number=+18445443861` (toll-free), `owner_alert_phones=[+17025178074]`, `feature_flags={test_client:true}`, id `b4c52d91-b560-447b-8889-b580368dd92f`. Twilio webhook target for this client: `/webhooks/twilio/missed-call/b4c52d91-…`. Blockers before SMS can flow: (1) **HubSpot** — needs a Private App `pat-na2-…` token from a real CRM portal; the developer-account API key + OAuth token both 401 on CRM v3 (a HubSpot *developer* account is not a CRM portal). (2) **Toll-free SMS** — TFV submitted (pending, days); unverified toll-free can't deliver US SMS. (3) **Prod env** — still need `ANTHROPIC_API_KEY` on + confirm `TWILIO_ACCOUNT_SID/AUTH_TOKEN`; `BASE_URL` must equal `https://traceflow-api-8f3o.onrender.com` for Twilio signature verification.
+
+### build: SMS terms page for Twilio Toll-Free Verification
+Added `/sms-terms/` to the landing site (`traceflow.app/sms-terms`, landing repo commit `ce93cda`) — standalone page (reuses `styles.css`, page CSS inline, no other pages touched) covering program description, customer-initiated opt-in, message frequency, rates, STOP/HELP, and privacy. This is the opt-in URL the TFV form requires (it wants a URL, not pasted text).
+
+---
+
+## 2026-06-23 — Public no-login, read-only admin demo (DEMO_MODE) at /demo
+
+### build: shareable read-only demo of the admin console — portfolio/resume artifact
+`DEMO_MODE` serves the existing admin SPA at `/demo` as a public, no-login, read-only experience backed entirely by in-memory fixtures — demo requests never touch the database, and the real `/admin` + all tenant data are untouched. Same deployment, so the demo tracks live code. Chosen over "real data, read-only" because the admin surface is cross-tenant and bypasses RLS — a public link there would expose every client's leads.
+- **Confinement is one seam:** `db.get_service_connection()` (sole DB accessor for the whole admin surface) yields an in-memory `FakeConn` when a `_demo` ContextVar is set. `require_admin_user` sets it — returning a synthetic identity with NO DB call — only when a token's `role==demo` AND `DEMO_MODE` is on; otherwise the demo identity is inert (401). `forbid_demo_writes` blocks every mutating verb for the demo role (also stops `leads.py` repush from hitting a real CRM).
+- **No-login link:** `POST /api/demo-login` (registered OUTSIDE `/api/admin`, so the gate-sweep invariant holds) mints a read-only `role=demo` token — no password/DB/audit. SPA detects the `/demo` path, auto-logs-in, shows a "Demo · read-only" banner, and uses a separate `tf_demo_token` key so it never shares a session with real `/admin`.
+- **Data:** `src/app/demo/` — shared multi-tenant `FakeConn` + fixtures (commit `26d0adb` enriched to 10 clients / 150 leads with varied per-client SMS threads; `dev_admin_preview.py` reuses them).
+- `DEMO_MODE=true` set on the Render **web service only** (not crons), directly via the Render API — the service ignores `render.yaml`, so that file's line is inert. Commits `2a624b5`, `26d0adb`. Live at `traceflow-api-8f3o.onrender.com/demo` (noindex). ~416 tests green; ruff clean.
+
+---
+
 ## 2026-06-22 — Admin-ui demo-polish pass (deployed) + prod demo-data seed (labeled TEST)
 
 ### build: admin-ui demo-readiness + portfolio polish — `admin-ui/` only, no backend/API/schema change
