@@ -912,6 +912,8 @@ Same 5 clients, no new acquisition, expanded over Months 6–12:
 
 ## 15. Roadmap / Phasing
 
+> **Near-term pacing superseded 2026-07-06:** the platform build (Phase 0's engineering scope below) shipped to production 2026-06-17, far ahead of the week estimates here. For the active calendar — 30 days to first paying customer, 90 to $1K MRR — see [`docs/timeline-30-90.md`](./timeline-30-90.md). The phase *content* below (what to build, in what order) is still accurate; only the dates are stale.
+
 ### Phase 0 — Foundation (Weeks 1–2)
 - SEMCO case study written + designed
 - Landing page live (single page, one offer)

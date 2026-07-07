@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-07-06 — Twilio TFV resubmission, prod outage fix, 30/90-day timeline, Calendly embed
+
+### build: Calendly inline embed wired on the landing page
+Landing repo (`traceflow-landing/index.html` + `styles.css`): replaced the external Calendly link-out with a live inline embed (`calendly-inline-widget` + `assets.calendly.com/assets/external/widget.js`) in the `#book` section, matching the TODO already left in the code. Event slug is `calendly.com/andy-traceflow/30min` — the real, already-provisioned Calendly event (confirmed 200 via the embed's own request), a 30-minute calendar block that matches `discovery-call.md`'s existing "book 30, end at 25" guidance — no playbook change needed. All three CTA instances now read "Book a 30-minute call." Verified via preview: widget renders at 640×700 on desktop, drops to a 620px-height mobile breakpoint, no console errors. Stylesheet cache-buster bumped (`?v=20260706`) per the standing rule on any `styles.css` edit.
+
+### decision: Twilio Toll-Free Verification resubmitted after 3-reason denial
+Original submission was denied on 30474 (business details), 30496 (use case/summary mismatch), 30513 (opt-in). Root causes: no legal entity behind "TraceFlow" (SSN + unregistered trade name submitted as business details — needs a Nevada DBA + EIN, still pending), Use Case Category was "Marketing" instead of "Customer Care" against a conversational use-case summary, and Opt-in Type was declared "Web Form" while the actual proof (`/sms-terms`) documents a phone-call-triggered ("Verbal") consent flow. Category, summary, and opt-in type corrected and resubmitted 2026-07-06; the business-entity fix (DBA + EIN) is still outstanding and blocks a durable fix to 30474 specifically.
+
+### ops: prod demo outage — Supabase project auto-paused
+`traceflow-api` crash-looped on startup (`asyncpg.exceptions.InternalServerError: ENOTFOUND tenant/user postgres.ienjxmyhttuzxoaeramo`) because the Supabase free-tier project (`ienjxmyhttuzxoaeramo`) auto-paused from idle — same failure mode as 2026-06-17. Restored via the Supabase MCP (`restore_project`); Render's existing crash-loop retry picked up the healthy DB on its own, no manual redeploy needed. Confirms this will keep recurring on the free tier until Supabase is upgraded to Pro (already on the pre-client-#1 checklist).
+
+### decision: 30/90-day revenue timeline set
+Added `docs/timeline-30-90.md`: 30 days to first paying customer (by 2026-08-05), 90 days to $1K+ MRR (by 2026-10-04, via 2 Founding Partners + 1 Standard client = $1,391 MRR). Supersedes PRD §15's week-by-week pacing for near-term dates only — the phase content is unchanged, but the platform build finished 2026-06-17, far ahead of the original estimate, so every remaining day is GTM time. Also added `docs/workflow-tracker.md`, reconciling a pasted checklist against session memory and live checks: corrected several stale unchecked items (GitHub Pro active, landing page copy locked, SSL verified) and flagged nuances (GHL adapter is code-complete but the live trial account is still a separate open item; `/sms-terms` covers SMS-specific privacy but there's no general site privacy/terms page yet).
+
+---
+
 ## 2026-06-25 — Prod test-data purge + first live-pilot client + SMS-terms page
 
 ### ops: prod Supabase wiped of all seeded demo/test data
