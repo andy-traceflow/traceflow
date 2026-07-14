@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     # Security
     admin_jwt_secret: str = ""
     allowed_origins: str = ""
+    # Admin /login failure rate limiting. Default on; set
+    # ADMIN_LOGIN_RATE_LIMIT_ENABLED=false to disable (e.g. during live
+    # testing when repeated logins would otherwise trip the lockout).
+    admin_login_rate_limit_enabled: bool = True
 
     # Demo mode — when true, serves a public no-login, read-only copy of the
     # admin UI at /demo backed entirely by in-memory fixtures (no DB access).

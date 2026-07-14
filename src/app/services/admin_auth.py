@@ -251,6 +251,8 @@ class LoginRateLimiter:
 
     def check(self, ip: str) -> None:
         """Raise 429 when the IP has exhausted its failure budget."""
+        if not get_settings().admin_login_rate_limit_enabled:
+            return
         now = self._clock()
         bucket = self._prune(ip, now)
         if len(bucket) >= self.max_attempts:

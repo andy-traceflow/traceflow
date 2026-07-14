@@ -51,6 +51,19 @@ _CRM_PUSH_STATUSES = frozenset(
     {QualificationStatus.qualified, QualificationStatus.high_value}
 )
 
+# Twilio reads a webhook's HTTP response body as TwiML. Every real message
+# (greeting, qualifier reply, owner alert) is sent asynchronously via the REST
+# API in the background task, so the synchronous ack must be an EMPTY TwiML
+# document. A non-empty body like "ok" gets echoed to the caller as an
+# auto-reply on the messaging webhook, and fails TwiML parsing (caller hears an
+# "application error") on the voice webhook.
+_TWIML_ACK = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+
+
+def _ack() -> Response:
+    """Empty-TwiML 200 — tells Twilio 'received, nothing to say synchronously'."""
+    return Response(status_code=200, content=_TWIML_ACK, media_type="application/xml")
+
 
 @router.post("/missed-call/{client_id}")
 async def missed_call_webhook(
@@ -69,7 +82,7 @@ async def missed_call_webhook(
     # Twilio retries on timeout/5xx — dedupe on CallSid so a retry can't
     # create a second lead or fire a second SMS at the caller.
     if call_sid and is_duplicate(client_id, source="twilio", external_id=call_sid):
-        return Response(status_code=200, content="ok")
+        return _ack()
 
     logger.info(
         "twilio missed call accepted",
@@ -77,7 +90,7 @@ async def missed_call_webhook(
     )
 
     background_tasks.add_task(_process_missed_call, client_id, payload)
-    return Response(status_code=200, content="ok")
+    return _ack()
 
 
 @router.post("/sms-reply/{client_id}")
@@ -92,7 +105,7 @@ async def sms_reply_webhook(
 
     message_sid = payload.get("MessageSid")
     if message_sid and is_duplicate(client_id, source="twilio_sms", external_id=message_sid):
-        return Response(status_code=200, content="ok")
+        return _ack()
 
     logger.info(
         "twilio sms reply accepted",
@@ -100,7 +113,7 @@ async def sms_reply_webhook(
     )
 
     background_tasks.add_task(_process_sms_reply, client_id, payload)
-    return Response(status_code=200, content="ok")
+    return _ack()
 
 
 async def _process_missed_call(client_id: UUID, payload: dict[str, Any]) -> None:
