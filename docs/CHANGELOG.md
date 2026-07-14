@@ -6,6 +6,25 @@
 
 ---
 
+## 2026-07-13 — LLR verified end-to-end live in prod (first real SMS conversation)
+
+### milestone: full missed-call → AI qualifier flow confirmed on a real phone
+First live end-to-end run of the LLR runtime against the `test-live-pilot` client (`b4c52d91-…`) with real Twilio SMS. Topology: Andy's personal cell `+17025178074` as the "company" line, conditional-call-forwarded to the toll-free `+18445443861`; a second phone as the caller. Confirmed working: missed call → AI greeting SMS → inbound reply → AI qualifier turn (Anthropic live). Twilio **Toll-Free Verification is approved**, so toll-free US SMS now delivers (clears blocker #2 from the 6/25 entry). `ANTHROPIC_API_KEY`, `TWILIO_ACCOUNT_SID/AUTH_TOKEN`, and `BASE_URL=https://traceflow-api-8f3o.onrender.com` all confirmed present/correct on prod.
+
+### ops: Twilio number was still on the demo webhooks + wrong auth token (root-caused via logs)
+The number's Voice **and** Messaging handlers were still pointing at Twilio's default `demo.twilio.com/welcome/...` placeholders — so calls never reached us (caller got the Twilio demo voicemail; zero POSTs at the server). Repointed Voice "A call comes in" → `/webhooks/twilio/missed-call/{id}` and Messaging "A message comes in" → `/webhooks/twilio/sms-reply/{id}` (Messaging had been mis-set to the `missed-call` path, which silently routed replies to the voice handler). Then a persistent `401`/`signature_verification_failed`: URL and `BASE_URL` proven identical via Twilio's error-11200 Request Inspector, so root cause was a bad `TWILIO_AUTH_TOKEN` value — corrected token cleared it. Reference for future onboards: the sig URL is rebuilt as `base_url.rstrip('/') + request.url.path`, so `BASE_URL` must be the exact `…onrender.com` host, and the auth token must belong to the account that owns the number.
+
+### fix: webhook ack was `content="ok"` → Twilio echoed it as a stray SMS (commit `98047d4`)
+`src/app/webhooks/twilio.py` returned `Response(status_code=200, content="ok")` from all four webhook exits. Twilio reads a webhook's HTTP body as TwiML: on the messaging webhook it auto-replied the literal "ok" to the caller (seen as an "ok" text before each real AI reply), and on voice it failed TwiML parsing (the earlier "application error" voicemail). Now returns an empty `<Response/>` via a shared `_ack()` helper (`media_type=application/xml`); all real messages already go out via the REST API in the background task. 33 twilio tests green.
+
+### build: admin login rate limiter made toggleable + password reset (commit `98047d4`)
+Added `ADMIN_LOGIN_RATE_LIMIT_ENABLED` (default `true`) gating `LoginRateLimiter.check()`; set `false` on prod so repeated logins during testing don't trip the 5-fail/15-min lockout (the lockout is in-memory/per-process and also clears on any redeploy). Re-enable by removing the env var. Admin password (bcrypt in `admin_users`, unrecoverable) reset via the idempotent `scripts/create_admin.py --email andy@traceflow.app` (re-run UPDATEs the hash + re-activates).
+
+### open: HubSpot CRM push still failing (last item for the full lead→CRM pipeline)
+Logs show `hubspot API error` on qualified leads — the pilot client's `client_configs.crm_credentials` still isn't a valid CRM-portal `pat-na2-…` Private App token (same blocker #1 from 6/25). Lead capture, greeting, and qualifier SMS are unaffected; only the CRM sync fails. This is now the **only** remaining gap to a full missed-call → qualified-lead → HubSpot-contact round trip.
+
+---
+
 ## 2026-07-06 — Twilio TFV resubmission, prod outage fix, 30/90-day timeline, Calendly embed
 
 ### build: Calendly inline embed wired on the landing page
