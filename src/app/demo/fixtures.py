@@ -285,6 +285,9 @@ def _config_row(slug: str, name: str, tier: str, status: str, crm: str | None,
                                     if crm else {"twilio": "demo-redacted"}),
         "qualification_prompt": None,
         "greeting_template": _greeting(name),
+        # Non-lead route acks (migration 021) — None → sensible defaults.
+        "existing_customer_template": None,
+        "vendor_ack_template": None,
         "prompt_versions": {"greeting": "greeting-v2", "qualifier": "qualifier-v3"},
         "ai_interaction_cap_monthly": cap,
         "ai_interactions_used": used,
@@ -314,6 +317,23 @@ def _config_row(slug: str, name: str, tier: str, status: str, crm: str | None,
             "monthly_fee": monthly_fee,
             "attribution_window_days": 90,
         },
+        # Returning-caller windows (migration 019).
+        "conversation_config": {
+            "resume_window_hours": 336,
+            "reopen_window_days": 90,
+            "recognize_returning_callers": True,
+            "reuse_lead_on_resume": True,
+        },
+        # Contact source-of-truth resolver config (migration 019, Slice 2.5).
+        # 'auto' resolves to 'crm' for clients with a CRM, 'traceflow' otherwise.
+        "contact_config": {
+            "source_of_truth": "auto",
+            "crm_write_back_contact_type": False,
+            "contact_type_cache_days": 30,
+        },
+        # Empty → services.qualification.get_schema falls back to the default
+        # seed. The schema editor (admin) lands in Slice 5.
+        "qualification_schema": {},
         "updated_at": NOW - timedelta(days=2),
     }
 
@@ -327,6 +347,9 @@ def _lead(slug: str, i: int, **overrides: Any) -> dict[str, Any]:
         "client_id": _cid(slug),
         "external_id": None,
         "source_system": "twilio_missed_call",
+        # contact_id links to the durable contact (migration 018). The demo's
+        # contacts panel lands in Slice 5; until then leads carry a null link.
+        "contact_id": None,
         "contact_name": name,
         "contact_company": None,
         "phone": f"+170255{52000 + i * 7 + _ROSTER_INDEX[slug] * 30}",
@@ -338,7 +361,10 @@ def _lead(slug: str, i: int, **overrides: Any) -> dict[str, Any]:
         "timeframe": _TIMEFRAMES[i % len(_TIMEFRAMES)],
         "classification": "potential_lead",
         "qualification_status": "qualifying",
+        # qualification_score is now the completeness score (migration 020).
         "qualification_score": 55 + (i * 7) % 40,
+        "value_score": 40 + (i * 11) % 55,
+        "qualification_data": {},
         "outcome": "open",
         "recovered_value": None,
         "outcome_source": None,
@@ -346,6 +372,10 @@ def _lead(slug: str, i: int, **overrides: Any) -> dict[str, Any]:
         "notes": "",
         "raw_payload": {"CallSid": f"CA{_ROSTER_INDEX[slug]:02d}{i:030d}"},
         "is_test": False,
+        # Conversation activity (migration 019).
+        "last_inbound_at": None,
+        "last_outbound_at": None,
+        "turn_count": 0,
         "created_at": NOW - timedelta(hours=6 * i + 2),
         "qualified_at": None,
         "pushed_to_crm_at": None,
@@ -487,6 +517,61 @@ def _build_routing(
     return buckets, log
 
 
+def _coid(slug: str, phone: str) -> UUID:
+    return uuid5(NAMESPACE_URL, f"traceflow-demo/contact/{slug}/{phone}")
+
+
+_CONTACT_TYPE_FROM_CLASS = {
+    "existing_customer": "customer",
+    "known_non_lead": "vendor",
+    "spam": "spam",
+    "potential_lead": "prospect",
+}
+
+
+def _build_contacts(slug: str, leads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One contact per distinct phone (mirrors the migration 018 backfill), with
+    each lead linked back via contact_id. Type derived from the lead's
+    classification so the panel's New/Existing/Vendors/Filtered groups populate."""
+    by_phone: dict[str, list[dict[str, Any]]] = {}
+    for lead in leads:
+        by_phone.setdefault(lead["phone"], []).append(lead)
+
+    contacts: list[dict[str, Any]] = []
+    for phone, group in by_phone.items():
+        ordered = sorted(group, key=lambda ld: ld["created_at"])
+        latest = ordered[-1]
+        cid = _coid(slug, phone)
+        ctype = _CONTACT_TYPE_FROM_CLASS.get(latest["classification"], "prospect")
+        name = next((ld["contact_name"] for ld in reversed(ordered) if ld["contact_name"]), None)
+        for lead in group:
+            lead["contact_id"] = cid
+        contacts.append({
+            "id": cid,
+            "client_id": _cid(slug),
+            "phone": phone,
+            "name": name,
+            "contact_type": ctype,
+            "contact_type_source": "crm" if ctype in ("customer", "vendor") else "inferred",
+            "contact_type_at": latest["created_at"],
+            "contact_type_reason": None,
+            "crm_external_id": None,
+            "known_facts": {"contact_name": name} if name else {},
+            "summary": (
+                f"Previously inquired about {latest['service_type'].replace('_', ' ')}."
+                if ctype == "prospect" and latest.get("service_type") else None
+            ),
+            "last_intent": None,
+            "call_count": len(group),
+            "lead_count": len(group),
+            "first_seen_at": ordered[0]["created_at"],
+            "last_seen_at": latest["created_at"],
+            "updated_at": latest["updated_at"],
+        })
+    contacts.sort(key=lambda c: c["last_seen_at"], reverse=True)
+    return contacts
+
+
 def _build_mappings(slug: str, crm: str | None) -> list[dict[str, Any]]:
     if crm is None:
         return []
@@ -534,6 +619,7 @@ def _build() -> dict[UUID, dict[str, Any]]:
         used = 120 + (i * 137) % 800
         config = _config_row(slug, name, tier, status, crm, tz, fee, cap, used)
         leads = _build_leads(slug, crm)
+        contacts = _build_contacts(slug, leads)  # links each lead's contact_id
         messages = _build_messages(slug, name, leads)
         buckets, log = _build_routing(slug, leads)
         mappings = _build_mappings(slug, crm)
@@ -558,6 +644,7 @@ def _build() -> dict[UUID, dict[str, Any]]:
                 "leads_30d": leads_30d,
             },
             "leads": leads,
+            "contacts": contacts,
             "messages": messages,
             "routing_buckets": buckets,
             "routing_log": log,

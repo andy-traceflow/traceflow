@@ -28,7 +28,12 @@ import httpx
 from app.models.client_config import ClientConfig
 from app.models.crm_contact import ContactType, CRMContact
 from app.models.lead import Lead, LeadCreate
-from app.services.field_mappings import FieldMapping, apply_transform, resolve_mappings
+from app.services.field_mappings import (
+    FieldMapping,
+    apply_transform,
+    dotted_qualification_data,
+    resolve_mappings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -332,6 +337,8 @@ class GoHighLevelAdapter:
             "timeframe": lead.timeframe,
             "notes": lead.notes,
             "external_id": lead.external_id,
+            # Non-canonical qualification fields, addressable as dotted paths.
+            **dotted_qualification_data(lead),
         }
 
     # ------------------------------------------------------------------

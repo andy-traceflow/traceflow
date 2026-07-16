@@ -1,70 +1,106 @@
-"""Missed-call greeting prompt.
+"""Missed-call greeting prompts.
 
-The first SMS sent after a missed call: a Jinja2 template filled from
-client_configs and sent to a cheap, fast model (Haiku). See the
-prompt-engineering skill for the wider prompt taxonomy.
+Three AI-selectable situations, plus two static acks:
+  * neutral   — an unknown, first-touch caller (GREETING_NEUTRAL_V1).
+  * returning — a recognized caller (GREETING_RETURNING_V1): greet by name and
+    ask same-project-or-new in one line. NEVER guess a name — a null name falls
+    back to neutral.
+  * customer / vendor — a service acknowledgment rendered from the client's
+    existing_customer_template / vendor_ack_template (no AI, no sales
+    qualification). Handled by render_customer_ack / render_vendor_ack.
 
-generate_greeting returns None when the API key is unset or the call
-fails — the caller falls back to a static template so the lead always
-gets a text.
+generate_greeting builds the unified prompt context (business block cached; the
+caller block gives the AI the returning caller's history) and returns
+(sms_text, version), or None when the API key is unset or the call fails — the
+caller falls back to a static template so the lead always gets a text.
 """
 
 from __future__ import annotations
 
 import logging
 
-import jinja2
-
 from app.config import get_settings
 from app.models.client_config import ClientConfig
+from app.models.contact import Contact
+from app.prompts.context import build_prompt_context
 from app.services.ai import get_anthropic_client
 
 logger = logging.getLogger(__name__)
 
 GREETING_MODEL = "claude-haiku-4-5"
 GREETING_MAX_TOKENS = 200
-DEFAULT_GREETING_VERSION = "v1"
+DEFAULT_GREETING_VERSION = "neutral_v1"
 
-GREETING_TEMPLATE_V1 = """\
-You are writing an SMS on behalf of {{business_name}}, a {{business_category}} business serving {{service_area}}.
+GREETING_NEUTRAL_V1 = """\
+Write a short SMS (under 160 characters) on behalf of the business above to a caller whose call was just missed. It must:
+1. Apologize for missing their call
+2. Identify the business by name
+3. Ask what they need help with
 
-Tone: {{tone_of_voice}}
+Do not use emojis unless the tone is "casual". Do not promise specific response times. Do not give pricing or quotes. Respond with ONLY the SMS body — no quotes, no commentary, no sign-off.
+"""
 
-Task: write a short SMS (under 160 characters) that:
-1. Apologizes for missing the caller's phone call
-2. Identifies the business by name
-3. Asks what the caller needs help with
+GREETING_RETURNING_V1 = """\
+This caller is known to us — see the caller block above for their name and history. Write a short SMS (under 160 characters) that:
+1. Greets them BY NAME (use the exact name in the caller block; never invent one)
+2. Apologizes for missing their call
+3. In ONE line, asks whether this is about their previous project or something new
 
-Do not use emojis unless the tone is "casual". Do not promise specific response times. Do not give pricing or quotes.
-
-Respond with ONLY the SMS body — no quotes, no commentary, no sign-off.
+Sound warm and familiar, not scripted. Do not use emojis unless the tone is "casual". Do not give pricing. Respond with ONLY the SMS body — no quotes, no commentary.
 """
 
 PROMPT_VERSIONS: dict[str, str] = {
-    "v1": GREETING_TEMPLATE_V1,
+    "neutral_v1": GREETING_NEUTRAL_V1,
+    "returning_v1": GREETING_RETURNING_V1,
 }
 
 
-async def generate_greeting(config: ClientConfig) -> tuple[str, str] | None:
-    """Generate the missed-call greeting SMS via the Anthropic API.
+def _select_version(config: ClientConfig, contact: Contact | None, is_returning: bool) -> str:
+    """Pick the greeting variant. Returning requires a known name AND the client
+    opting in AND a returning signal (the classifier's is_returning, or a
+    CRM-linked contact). Never guess: a null name always falls back to neutral."""
+    if (
+        contact is not None
+        and contact.name
+        and config.recognize_returning_callers
+        and (is_returning or contact.crm_external_id)
+    ):
+        return "returning_v1"
+    return DEFAULT_GREETING_VERSION
 
-    Returns (sms_text, version) on success, or None when generation is
-    not possible (no API key) or fails — the caller is expected to fall
-    back to a static template.
-    """
+
+async def generate_greeting(
+    config: ClientConfig,
+    contact: Contact | None = None,
+    *,
+    is_returning: bool = False,
+    timezone: str = "America/Los_Angeles",
+) -> tuple[str, str] | None:
+    """Generate the missed-call greeting SMS. Returns (sms_text, version), or
+    None when generation is not possible (no API key) or fails."""
     settings = get_settings()
     if not settings.anthropic_api_key:
         logger.warning("anthropic_api_key not set — skipping AI greeting")
         return None
 
-    version = config.prompt_versions.get("greeting", DEFAULT_GREETING_VERSION)
-    prompt = _render_prompt(config, version)
+    version = config.prompt_versions.get("greeting") or _select_version(
+        config, contact, is_returning
+    )
+    instructions = PROMPT_VERSIONS.get(version, GREETING_NEUTRAL_V1)
+    # The returning variant needs the caller block; the neutral one doesn't, but
+    # building the same context object either way keeps the business block cached.
+    ctx = build_prompt_context(
+        config,
+        contact if version == "returning_v1" else None,
+        timezone=timezone,
+    )
 
     try:
         response = await get_anthropic_client().messages.create(
             model=GREETING_MODEL,
             max_tokens=GREETING_MAX_TOKENS,
-            messages=[{"role": "user", "content": prompt}],
+            system=ctx.system_blocks(instructions),
+            messages=[{"role": "user", "content": "Write the greeting SMS now."}],
         )
     except Exception as e:
         logger.warning("AI greeting generation failed", exc_info=e)
@@ -77,23 +113,23 @@ async def generate_greeting(config: ClientConfig) -> tuple[str, str] | None:
     return text, version
 
 
-def _render_prompt(config: ClientConfig, version: str) -> str:
-    """Render the greeting prompt template for the given version."""
-    template_src = PROMPT_VERSIONS.get(version)
-    if template_src is None:
-        logger.warning(
-            "unknown greeting prompt version — using default",
-            extra={"version": version},
-        )
-        template_src = PROMPT_VERSIONS[DEFAULT_GREETING_VERSION]
-    return jinja2.Template(template_src).render(
-        business_name=config.business_name or "our team",
-        business_category=config.category,
-        service_area=_service_area(config),
-        tone_of_voice=config.tone_of_voice,
+def render_customer_ack(config: ClientConfig) -> str:
+    """Service acknowledgment for an existing customer at voicemail — no sales
+    qualification. Uses the client's template if set, else a sensible default."""
+    business = config.business_name or "us"
+    template = config.existing_customer_template
+    if template:
+        return template.replace("{business_name}", business)
+    return (
+        f"Hi! Thanks for calling {business} — sorry we missed you. "
+        "We've let the team know and someone will reach out shortly."
     )
 
 
-def _service_area(config: ClientConfig) -> str:
-    zips = config.service_area_zips[:3]
-    return ", ".join(zips) if zips else "the local area"
+def render_vendor_ack(config: ClientConfig) -> str:
+    """Minimal acknowledgment for a known vendor/partner."""
+    business = config.business_name or "us"
+    template = config.vendor_ack_template
+    if template:
+        return template.replace("{business_name}", business)
+    return f"Thanks for reaching out to {business}. We'll be in touch if we need anything."

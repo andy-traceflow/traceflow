@@ -1,0 +1,7 @@
+{
+  "name": "max-turns timeout — not enough captured by the turn budget",
+  "service_area_zips": [],
+  "state": {"contact_name": "Al"},
+  "turn_count": 8,
+  "expect": {"gate": null, "termination": "needs_review"}
+}

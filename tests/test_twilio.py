@@ -1,9 +1,10 @@
-"""Twilio missed-call flow tests.
+"""Twilio missed-call + SMS-reply flow tests.
 
-Covers the X-Twilio-Signature verifier, the SMS sender's no-op guards,
-greeting rendering, and the missed-call webhook handler. The DB layer
-(set_tenant_context) and the SMS layer (send_sms) are mocked, so the
-whole suite runs offline.
+Covers the X-Twilio-Signature verifier, the SMS sender's no-op guards, greeting
+rendering, and the two webhook handlers' orchestration. The DB layer
+(set_tenant_context), the classifier (classify_caller / resolve_contact), and
+the SMS layer (send_sms) are mocked, so the whole suite runs offline. The
+classification tree itself is covered in tests/services/test_classification.py.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.models.client_config import ClientConfig
-from app.models.crm_contact import ContactType, CRMContact
+from app.models.contact import Contact, ContactType
 from app.models.lead import Classification
 from app.prompts.intent import Intent
 from app.services import dedupe
@@ -208,7 +209,7 @@ def test_missed_call_dedupes_on_call_sid(client):
 
 
 # ---------------------------------------------------------------------------
-# _process_missed_call — orchestration (DB + SMS mocked)
+# _process_missed_call — orchestration (DB + SMS + classifier mocked)
 # ---------------------------------------------------------------------------
 
 def _fake_tenant_ctx(conn):
@@ -231,16 +232,57 @@ def _config_row(client_id, **overrides):
     return row
 
 
+def _contact(contact_type: ContactType = ContactType.unknown, **overrides: Any) -> Contact:
+    now = datetime.now(UTC)
+    base: dict[str, Any] = {
+        "id": uuid4(),
+        "client_id": uuid4(),
+        "phone": "+15551112222",
+        "contact_type": contact_type,
+        "known_facts": {},
+        "first_seen_at": now,
+        "last_seen_at": now,
+        "updated_at": now,
+    }
+    base.update(overrides)
+    return Contact(**base)
+
+
+def _result(
+    route: Route,
+    classification: Classification,
+    *,
+    should_text: bool = True,
+    contact: Contact | None = None,
+    reason: str = "test",
+    existing_lead_id: Any = None,
+    is_returning: bool = False,
+) -> ClassificationResult:
+    return ClassificationResult(
+        route,
+        classification,
+        should_text=should_text,
+        reason=reason,
+        contact=contact if contact is not None else _contact(),
+        existing_lead_id=existing_lead_id,
+        is_returning=is_returning,
+    )
+
+
+def _potential(contact: Contact | None = None) -> ClassificationResult:
+    return _result(Route.potential_lead, Classification.potential_lead, contact=contact)
+
+
 @pytest.mark.asyncio
 async def test_process_missed_call_falls_back_to_template_greeting():
     """No AI result → static template greeting; ai_generated False, cap untouched."""
     client_id = uuid4()
     conn = AsyncMock()
     conn.fetchrow.side_effect = [_config_row(client_id), {"id": uuid4()}]
-    conn.fetchval.return_value = None  # no active conversation for this caller
 
     with (
         patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        patch("app.webhooks.twilio.classify_caller", new=AsyncMock(return_value=_potential())),
         patch("app.webhooks.twilio.generate_greeting", new=AsyncMock(return_value=None)),
         patch("app.webhooks.twilio.send_sms", new=AsyncMock(return_value={"sid": "SM-1"})) as mock_sms,
     ):
@@ -268,10 +310,10 @@ async def test_process_missed_call_skips_sms_without_twilio_number():
     client_id = uuid4()
     conn = AsyncMock()
     conn.fetchrow.side_effect = [_config_row(client_id, twilio_number=None), {"id": uuid4()}]
-    conn.fetchval.return_value = None  # no active conversation for this caller
 
     with (
         patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        patch("app.webhooks.twilio.classify_caller", new=AsyncMock(return_value=_potential())),
         patch("app.webhooks.twilio.send_sms", new=AsyncMock()) as mock_sms,
     ):
         await twilio_webhook._process_missed_call(
@@ -286,10 +328,10 @@ async def test_process_missed_call_records_failure_when_sms_fails():
     client_id = uuid4()
     conn = AsyncMock()
     conn.fetchrow.side_effect = [_config_row(client_id), {"id": uuid4()}]
-    conn.fetchval.return_value = None  # no active conversation for this caller
 
     with (
         patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        patch("app.webhooks.twilio.classify_caller", new=AsyncMock(return_value=_potential())),
         patch("app.webhooks.twilio.generate_greeting", new=AsyncMock(return_value=None)),
         patch("app.webhooks.twilio.send_sms", new=AsyncMock(return_value=None)),
     ):
@@ -325,10 +367,10 @@ async def test_process_missed_call_ai_greeting_records_version_and_bills_cap():
     client_id = uuid4()
     conn = AsyncMock()
     conn.fetchrow.side_effect = [_config_row(client_id), {"id": uuid4()}]
-    conn.fetchval.return_value = None  # no active conversation for this caller
 
     with (
         patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        patch("app.webhooks.twilio.classify_caller", new=AsyncMock(return_value=_potential())),
         patch(
             "app.webhooks.twilio.generate_greeting",
             new=AsyncMock(return_value=("AI greeting!", "v1")),
@@ -350,25 +392,48 @@ async def test_process_missed_call_ai_greeting_records_version_and_bills_cap():
     assert msg_call.args[5] == "greeting:v1"    # prompt_version
 
 
+@pytest.mark.asyncio
+async def test_process_missed_call_bumps_contact_call_count():
+    client_id = uuid4()
+    contact = _contact()
+    conn = AsyncMock()
+    conn.fetchrow.side_effect = [_config_row(client_id), {"id": uuid4()}]
+
+    with (
+        patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        patch("app.webhooks.twilio.classify_caller", new=AsyncMock(return_value=_potential(contact))),
+        patch("app.webhooks.twilio.generate_greeting", new=AsyncMock(return_value=None)),
+        patch("app.webhooks.twilio.send_sms", new=AsyncMock(return_value={"sid": "SM-1"})),
+    ):
+        await twilio_webhook._process_missed_call(
+            client_id, {"CallSid": "CA-9", "From": "+15551112222"}
+        )
+
+    sqls = [c.args[0] for c in conn.execute.call_args_list]
+    assert any("UPDATE contacts SET call_count = call_count + 1" in s for s in sqls)
+
+
 # ---------------------------------------------------------------------------
-# _process_missed_call — classification routing (classify_caller mocked)
+# _process_missed_call — classification routing
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_process_missed_call_active_conversation_records_no_new_lead():
-    """A caller with an open lead is logged as a repeat call, not re-greeted.
-
-    Uses the real classify_caller: a truthy fetchval is an active conversation,
-    which must short-circuit before any lead INSERT or SMS.
-    """
+    """A caller with a fresh open lead is logged as a repeat call, not re-greeted."""
     client_id = uuid4()
     existing_lead = uuid4()
     conn = AsyncMock()
     conn.fetchrow.side_effect = [_config_row(client_id)]  # only the config lookup
-    conn.fetchval.return_value = existing_lead            # active conversation found
+    active = _result(
+        Route.active_conversation,
+        Classification.potential_lead,
+        should_text=False,
+        existing_lead_id=existing_lead,
+    )
 
     with (
         patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        patch("app.webhooks.twilio.classify_caller", new=AsyncMock(return_value=active)),
         patch("app.webhooks.twilio.send_sms", new=AsyncMock()) as mock_sms,
     ):
         await twilio_webhook._process_missed_call(
@@ -376,10 +441,80 @@ async def test_process_missed_call_active_conversation_records_no_new_lead():
         )
 
     mock_sms.assert_not_called()
-    assert conn.fetchrow.call_count == 1  # no lead INSERT (lead insert is a fetchrow)
+    assert conn.fetchrow.call_count == 1  # config only — no lead INSERT
     sqls = [c.args[0] for c in conn.execute.call_args_list]
     assert any("missed_call_during_active_conversation" in s for s in sqls)
     assert not any("INSERT INTO leads" in s for s in sqls)
+
+
+@pytest.mark.asyncio
+async def test_process_missed_call_resumed_conversation_reuses_lead():
+    """A stale-open lead is resumed: the same lead is reused (no new INSERT) and
+    the caller is re-greeted."""
+    client_id = uuid4()
+    existing_lead = uuid4()
+    conn = AsyncMock()
+    conn.fetchrow.side_effect = [_config_row(client_id)]  # config only; lead reused
+    resumed = _result(
+        Route.resumed_conversation,
+        Classification.potential_lead,
+        should_text=True,
+        existing_lead_id=existing_lead,
+        is_returning=True,
+        reason="resumed_conversation",
+    )
+
+    with (
+        patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        patch("app.webhooks.twilio.classify_caller", new=AsyncMock(return_value=resumed)),
+        patch("app.webhooks.twilio.generate_greeting", new=AsyncMock(return_value=None)),
+        patch("app.webhooks.twilio.send_sms", new=AsyncMock(return_value={"sid": "SM-r"})) as mock_sms,
+    ):
+        await twilio_webhook._process_missed_call(
+            client_id, {"CallSid": "CA-9", "From": "+15551112222"}
+        )
+
+    sqls = [c.args[0] for c in conn.execute.call_args_list]
+    assert any("conversation_resumed" in s for s in sqls)
+    assert not any("INSERT INTO leads" in s for s in sqls)  # reused — no duplicate
+    mock_sms.assert_called_once()  # re-greeted
+
+
+@pytest.mark.asyncio
+async def test_process_missed_call_returning_contact_seeds_facts():
+    """A returning contact gets a NEW lead pre-populated with person-scoped facts."""
+    client_id = uuid4()
+    contact = _contact(
+        ContactType.prospect, known_facts={"contact_name": "Maria", "address": "1 Elm St"}
+    )
+    conn = AsyncMock()
+    conn.fetchrow.side_effect = [_config_row(client_id), {"id": uuid4()}]
+    returning = _result(
+        Route.returning_contact,
+        Classification.potential_lead,
+        should_text=True,
+        contact=contact,
+        is_returning=True,
+        reason="returning_contact",
+    )
+
+    with (
+        patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        patch("app.webhooks.twilio.classify_caller", new=AsyncMock(return_value=returning)),
+        patch("app.webhooks.twilio.generate_greeting", new=AsyncMock(return_value=None)),
+        patch("app.webhooks.twilio.send_sms", new=AsyncMock(return_value={"sid": "SM"})),
+    ):
+        await twilio_webhook._process_missed_call(
+            client_id, {"CallSid": "CA-9", "From": "+15551112222"}
+        )
+
+    lead_insert = next(
+        c for c in conn.fetchrow.call_args_list if "INSERT INTO leads" in c.args[0]
+    )
+    assert lead_insert.args[8] == "Maria"      # contact_name seeded from known_facts
+    assert lead_insert.args[9] == "1 Elm St"   # address seeded from known_facts
+    sqls = [c.args[0] for c in conn.execute.call_args_list]
+    assert any("returning_contact" in s for s in sqls)
 
 
 @pytest.mark.asyncio
@@ -389,14 +524,13 @@ async def test_process_missed_call_suppresses_greeting_for_known_non_lead():
     client_id = uuid4()
     conn = AsyncMock()
     conn.fetchrow.side_effect = [_config_row(client_id), {"id": uuid4()}]
-    conn.fetchval.return_value = None
-
-    suppressed = ClassificationResult(
-        route=Route.known_non_lead,
-        classification=Classification.known_non_lead,
+    suppressed = _result(
+        Route.known_non_lead,
+        Classification.known_non_lead,
         should_text=False,
         reason="vendor_allowlist",
     )
+
     with (
         patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
         patch("app.webhooks.twilio.classify_caller", new=AsyncMock(return_value=suppressed)),
@@ -410,7 +544,6 @@ async def test_process_missed_call_suppresses_greeting_for_known_non_lead():
     mock_sms.assert_not_called()
     mock_greet.assert_not_called()  # no AI billed for a suppressed greeting
 
-    # Lead row still created, tagged known_non_lead (lead insert is a fetchrow).
     lead_insert = next(
         c for c in conn.fetchrow.call_args_list if "INSERT INTO leads" in c.args[0]
     )
@@ -428,15 +561,14 @@ async def test_process_missed_call_alerts_on_existing_customer():
     client_id = uuid4()
     conn = AsyncMock()
     conn.fetchrow.side_effect = [_config_row(client_id), {"id": uuid4()}]
-    conn.fetchval.return_value = None
 
-    contact = CRMContact(external_id="c1", name="Repeat Client", contact_type=ContactType.customer)
-    existing = ClassificationResult(
-        route=Route.existing_customer,
-        classification=Classification.existing_customer,
+    contact = _contact(ContactType.customer, name="Repeat Client")
+    existing = _result(
+        Route.existing_customer,
+        Classification.existing_customer,
         should_text=True,
-        reason="crm_existing_customer",
         contact=contact,
+        reason="resolved_customer",
     )
     with (
         patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
@@ -462,15 +594,14 @@ async def test_process_missed_call_alerts_existing_customer_even_when_text_suppr
     client_id = uuid4()
     conn = AsyncMock()
     conn.fetchrow.side_effect = [_config_row(client_id), {"id": uuid4()}]
-    conn.fetchval.return_value = None
 
-    contact = CRMContact(external_id="c1", name="Repeat Client", contact_type=ContactType.customer)
-    suppressed = ClassificationResult(
-        route=Route.existing_customer,
-        classification=Classification.existing_customer,
+    contact = _contact(ContactType.customer, name="Repeat Client")
+    suppressed = _result(
+        Route.existing_customer,
+        Classification.existing_customer,
         should_text=False,
-        reason="crm_existing_customer",
         contact=contact,
+        reason="resolved_customer",
     )
     with (
         patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
@@ -508,15 +639,51 @@ def _message_row(direction: str, body: str) -> dict[str, Any]:
 
 
 def _lead_row(lead_id: Any, **overrides: Any) -> dict[str, Any]:
+    """A full leads row — the handler builds a Lead from it (SELECT * / RETURNING *)."""
+    now = datetime.now(UTC)
     row: dict[str, Any] = {
         "id": lead_id,
-        "qualification_status": "unqualified",
-        "budget_range": None,
+        "client_id": uuid4(),
+        "external_id": None,
+        "source_system": "twilio_missed_call",
+        "contact_id": uuid4(),
         "contact_name": None,
+        "contact_company": None,
+        "phone": "+15551112222",
+        "email": None,
+        "address": None,
         "service_type": None,
+        "sqft": None,
+        "budget_range": None,
+        "timeframe": None,
+        "qualification_status": "unqualified",
+        "qualification_score": None,
+        "value_score": None,
+        "qualification_data": {},
+        "classification": "potential_lead",
+        "outcome": "open",
+        "recovered_value": None,
+        "outcome_source": None,
+        "outcome_recorded_at": None,
+        "notes": "",
+        "raw_payload": {},
+        "last_inbound_at": None,
+        "last_outbound_at": None,
+        "turn_count": 0,
+        "created_at": now,
+        "qualified_at": None,
+        "pushed_to_crm_at": None,
+        "updated_at": now,
     }
     row.update(overrides)
     return row
+
+
+def _patch_resolve(contact: Contact | None = None):
+    return patch(
+        "app.webhooks.twilio.resolve_contact",
+        new=AsyncMock(return_value=contact if contact is not None else _contact()),
+    )
 
 
 def test_sms_reply_schedules_processing(client):
@@ -551,7 +718,7 @@ async def test_process_sms_reply_runs_qualifier_and_applies_fields():
     client_id = uuid4()
     lead_id = uuid4()
     conn = AsyncMock()
-    conn.fetchrow.side_effect = [_lead_row(lead_id), _config_row(client_id)]
+    conn.fetchrow.side_effect = [_config_row(client_id), _lead_row(lead_id)]
     conn.fetchval.return_value = False
     conn.fetch.return_value = [
         _message_row("outbound", "Hi, sorry we missed you!"),
@@ -560,6 +727,7 @@ async def test_process_sms_reply_runs_qualifier_and_applies_fields():
 
     with (
         patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        _patch_resolve(),
         patch("app.webhooks.twilio.classify_intent", new=AsyncMock(return_value=Intent.sales)),
         patch(
             "app.webhooks.twilio.qualifier_turn",
@@ -582,20 +750,64 @@ async def test_process_sms_reply_runs_qualifier_and_applies_fields():
 
 
 @pytest.mark.asyncio
-async def test_process_sms_reply_ignores_unknown_caller():
+async def test_process_sms_reply_cold_inbound_opens_lead():
+    """No open lead + a real contact → open a NEW lead and qualify. The old
+    silent-drop of an inbound SMS with no active lead is gone."""
+    client_id = uuid4()
+    new_lead_id = uuid4()
     conn = AsyncMock()
-    conn.fetchrow.side_effect = [None]  # no active lead for this number
+    conn.fetchrow.side_effect = [
+        _config_row(client_id),
+        None,  # no open lead
+        _lead_row(new_lead_id),  # the freshly-opened lead (INSERT ... RETURNING)
+    ]
+    conn.fetchval.return_value = False
+    conn.fetch.return_value = [_message_row("inbound", "Do you do quartz counters?")]
 
     with (
         patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
-        patch("app.webhooks.twilio.qualifier_turn", new=AsyncMock()) as mock_qual,
+        _patch_resolve(),
+        patch("app.webhooks.twilio.classify_intent", new=AsyncMock(return_value=Intent.sales)),
+        patch(
+            "app.webhooks.twilio.qualifier_turn",
+            new=AsyncMock(return_value=("What's your zip?", {}, "v1")),
+        ),
+        patch("app.webhooks.twilio.send_sms", new=AsyncMock(return_value={"sid": "SM"})) as mock_sms,
     ):
         await twilio_webhook._process_sms_reply(
-            uuid4(), {"From": "+15550000000", "Body": "hello", "MessageSid": "MM-2"}
+            client_id,
+            {"From": "+15551112222", "Body": "Do you do quartz counters?", "MessageSid": "MM-cold"},
         )
 
-    mock_qual.assert_not_called()
-    conn.execute.assert_not_called()
+    # A lead was opened and the qualifier ran (a reply was sent).
+    assert any("INSERT INTO leads" in c.args[0] for c in conn.fetchrow.call_args_list)
+    sqls = [c.args[0] for c in conn.execute.call_args_list]
+    assert any("inbound_sms_lead_opened" in s for s in sqls)
+    mock_sms.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_process_sms_reply_drops_blocked_contact():
+    """A blocked (or spam) contact texting in gets no lead, no reply, no spend."""
+    client_id = uuid4()
+    conn = AsyncMock()
+    conn.fetchrow.side_effect = [_config_row(client_id)]  # config only
+
+    with (
+        patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        _patch_resolve(_contact(ContactType.blocked)),
+        patch("app.webhooks.twilio.qualifier_turn", new=AsyncMock()) as mock_qual,
+        patch("app.webhooks.twilio.send_sms", new=AsyncMock()) as mock_sms,
+    ):
+        await twilio_webhook._process_sms_reply(
+            client_id, {"From": "+15551112222", "Body": "buy now", "MessageSid": "MM-blk"}
+        )
+
+    mock_qual.assert_not_awaited()
+    mock_sms.assert_not_called()
+    sqls = [c.args[0] for c in conn.execute.call_args_list]
+    assert any("inbound_sms_dropped" in s for s in sqls)
+    assert not any("INSERT INTO leads" in s for s in sqls)
 
 
 @pytest.mark.asyncio
@@ -603,11 +815,12 @@ async def test_process_sms_reply_flags_needs_review_when_qualifier_unavailable()
     client_id = uuid4()
     lead_id = uuid4()
     conn = AsyncMock()
-    conn.fetchrow.side_effect = [_lead_row(lead_id), _config_row(client_id)]
+    conn.fetchrow.side_effect = [_config_row(client_id), _lead_row(lead_id)]
     conn.fetch.return_value = [_message_row("inbound", "hello")]
 
     with (
         patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        _patch_resolve(),
         patch("app.webhooks.twilio.classify_intent", new=AsyncMock(return_value=Intent.sales)),
         patch("app.webhooks.twilio.qualifier_turn", new=AsyncMock(return_value=None)),
         patch("app.webhooks.twilio.send_sms", new=AsyncMock()) as mock_sms,
@@ -628,14 +841,15 @@ async def test_process_sms_reply_alerts_owner_on_vip_keyword():
     lead_id = uuid4()
     conn = AsyncMock()
     conn.fetchrow.side_effect = [
-        _lead_row(lead_id),
         _config_row(client_id, vip_keywords=["emergency"]),
+        _lead_row(lead_id),
     ]
     conn.fetchval.return_value = False  # not yet alerted
     conn.fetch.return_value = [_message_row("inbound", "we have an emergency leak")]
 
     with (
         patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        _patch_resolve(),
         patch("app.webhooks.twilio.classify_intent", new=AsyncMock(return_value=Intent.sales)),
         patch(
             "app.webhooks.twilio.qualifier_turn",
@@ -665,11 +879,12 @@ async def test_process_sms_reply_existing_customer_intent_routes_support_touch()
     client_id = uuid4()
     lead_id = uuid4()
     conn = AsyncMock()
-    conn.fetchrow.side_effect = [_lead_row(lead_id), _config_row(client_id)]
+    conn.fetchrow.side_effect = [_config_row(client_id), _lead_row(lead_id)]
     conn.fetch.return_value = [_message_row("inbound", "you did my kitchen last year")]
 
     with (
         patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        _patch_resolve(),
         patch(
             "app.webhooks.twilio.classify_intent",
             new=AsyncMock(return_value=Intent.existing_customer),
@@ -696,11 +911,12 @@ async def test_process_sms_reply_non_lead_intent_marks_contact():
     client_id = uuid4()
     lead_id = uuid4()
     conn = AsyncMock()
-    conn.fetchrow.side_effect = [_lead_row(lead_id), _config_row(client_id)]
+    conn.fetchrow.side_effect = [_config_row(client_id), _lead_row(lead_id)]
     conn.fetch.return_value = [_message_row("inbound", "Hi, I sell countertop slabs wholesale")]
 
     with (
         patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        _patch_resolve(),
         patch("app.webhooks.twilio.classify_intent", new=AsyncMock(return_value=Intent.non_lead)),
         patch("app.webhooks.twilio.qualifier_turn", new=AsyncMock()) as mock_qual,
         patch("app.webhooks.twilio.send_sms", new=AsyncMock()) as mock_sms,
@@ -722,11 +938,12 @@ async def test_process_sms_reply_spam_intent_marks_spam_no_reply():
     client_id = uuid4()
     lead_id = uuid4()
     conn = AsyncMock()
-    conn.fetchrow.side_effect = [_lead_row(lead_id), _config_row(client_id)]
+    conn.fetchrow.side_effect = [_config_row(client_id), _lead_row(lead_id)]
     conn.fetch.return_value = [_message_row("inbound", "WIN A FREE CRUISE text STOP to opt out")]
 
     with (
         patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        _patch_resolve(),
         patch("app.webhooks.twilio.classify_intent", new=AsyncMock(return_value=Intent.spam)),
         patch("app.webhooks.twilio.qualifier_turn", new=AsyncMock()) as mock_qual,
         patch("app.webhooks.twilio.send_sms", new=AsyncMock()) as mock_sms,
@@ -749,11 +966,12 @@ async def test_process_sms_reply_ambiguous_intent_sends_clarifier():
     client_id = uuid4()
     lead_id = uuid4()
     conn = AsyncMock()
-    conn.fetchrow.side_effect = [_lead_row(lead_id), _config_row(client_id)]
+    conn.fetchrow.side_effect = [_config_row(client_id), _lead_row(lead_id)]
     conn.fetch.return_value = [_message_row("inbound", "hi")]
 
     with (
         patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        _patch_resolve(),
         patch("app.webhooks.twilio.classify_intent", new=AsyncMock(return_value=Intent.ambiguous)),
         patch("app.webhooks.twilio.qualifier_turn", new=AsyncMock()) as mock_qual,
         patch("app.webhooks.twilio.send_sms", new=AsyncMock(return_value={"sid": "SM-amb"})) as mock_sms,
@@ -776,12 +994,13 @@ async def test_process_sms_reply_intent_unavailable_degrades_to_qualifier():
     client_id = uuid4()
     lead_id = uuid4()
     conn = AsyncMock()
-    conn.fetchrow.side_effect = [_lead_row(lead_id), _config_row(client_id)]
+    conn.fetchrow.side_effect = [_config_row(client_id), _lead_row(lead_id)]
     conn.fetchval.return_value = False
     conn.fetch.return_value = [_message_row("inbound", "I need new countertops")]
 
     with (
         patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        _patch_resolve(),
         patch("app.webhooks.twilio.classify_intent", new=AsyncMock(return_value=None)),
         patch(
             "app.webhooks.twilio.qualifier_turn",

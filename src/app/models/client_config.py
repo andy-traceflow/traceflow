@@ -28,6 +28,9 @@ class ClientConfig(BaseModel):
     # AI behavior
     qualification_prompt: str | None = None
     greeting_template: str | None = None
+    # Non-lead route acks (migration 021) — distinct messages, both nullable.
+    existing_customer_template: str | None = None
+    vendor_ack_template: str | None = None
     prompt_versions: dict[str, str] = Field(default_factory=dict)
     ai_interaction_cap_monthly: int = 1000
     ai_interactions_used: int = 0
@@ -52,6 +55,17 @@ class ClientConfig(BaseModel):
     # Revenue tracking (recovered-revenue attribution)
     revenue_config: dict[str, Any] = Field(default_factory=dict)
 
+    # Returning-caller conversation windows (migration 019)
+    conversation_config: dict[str, Any] = Field(default_factory=dict)
+
+    # Contact source-of-truth resolver config (migration 019, Slice 2.5)
+    contact_config: dict[str, Any] = Field(default_factory=dict)
+
+    # Config-driven qualification schema (migration 020). Parsed via
+    # services.qualification.get_schema, which falls back to the default when
+    # empty/invalid.
+    qualification_schema: dict[str, Any] = Field(default_factory=dict)
+
     updated_at: datetime
 
     model_config = {"from_attributes": True}
@@ -75,6 +89,13 @@ class ClientConfig(BaseModel):
     @property
     def service_types(self) -> list[str]:
         return self.brand.get("service_types", []) or []
+
+    @property
+    def default_phone_region(self) -> str:
+        """ISO region used to normalize hand-entered phone numbers to E.164.
+        Config-driven (brand.phone_region), defaulting to US — our clients are
+        US/Canada surface contractors. Never a constant at the call site."""
+        return self.brand.get("phone_region", "US")
 
     def feature(self, flag: str, default: bool = False) -> bool:
         value = self.feature_flags.get(flag, default)
@@ -111,6 +132,70 @@ class ClientConfig(BaseModel):
     @property
     def drop_spam_silently(self) -> bool:
         return bool(self.classification_config.get("drop_spam_silently", True))
+
+    @property
+    def rescore_spam_after_days(self) -> int | None:
+        """Days after which a contact typed `spam` is re-scored on a new call.
+        Default None = never re-score (a spam inference sticks until manual
+        revocation). Returns None when unset or unparseable."""
+        raw = self.classification_config.get("rescore_spam_after_days")
+        if raw in (None, ""):
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    # ------------------------------------------------------------------
+    # Returning-caller conversation windows (migration 019). Defaults match
+    # the materialized conversation_config default so a partial/empty object
+    # still behaves.
+    # ------------------------------------------------------------------
+    @property
+    def resume_window_hours(self) -> int:
+        try:
+            return int(self.conversation_config.get("resume_window_hours", 336))
+        except (TypeError, ValueError):
+            return 336
+
+    @property
+    def reopen_window_days(self) -> int:
+        try:
+            return int(self.conversation_config.get("reopen_window_days", 90))
+        except (TypeError, ValueError):
+            return 90
+
+    @property
+    def recognize_returning_callers(self) -> bool:
+        return bool(self.conversation_config.get("recognize_returning_callers", True))
+
+    @property
+    def reuse_lead_on_resume(self) -> bool:
+        return bool(self.conversation_config.get("reuse_lead_on_resume", True))
+
+    # ------------------------------------------------------------------
+    # Contact source-of-truth resolver config (migration 019, Slice 2.5).
+    # ------------------------------------------------------------------
+    @property
+    def contact_source_of_truth(self) -> str:
+        """'auto' | 'crm' | 'traceflow'. 'auto' is resolved to a concrete mode
+        at runtime by services.contacts.resolve_contact_type — never branched on
+        elsewhere."""
+        return self.contact_config.get("source_of_truth", "auto")
+
+    @property
+    def crm_write_back_contact_type(self) -> bool:
+        """OFF by default. TraceFlow never writes an inferred type back to a
+        client's CRM; only manual classifications are eligible, and only when
+        this is explicitly enabled."""
+        return bool(self.contact_config.get("crm_write_back_contact_type", False))
+
+    @property
+    def contact_type_cache_days(self) -> int:
+        try:
+            return int(self.contact_config.get("contact_type_cache_days", 30))
+        except (TypeError, ValueError):
+            return 30
 
     # ------------------------------------------------------------------
     # Revenue-tracking config. Default 'estimated' (the digest's budget-bucket

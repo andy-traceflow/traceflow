@@ -1,7 +1,7 @@
 """Missed-call greeting prompt tests.
 
-Covers template rendering (pure) and generate_greeting with the Anthropic
-client mocked — no real API calls, runs offline.
+Covers variant selection (neutral vs returning), the static customer/vendor
+acks, and generate_greeting with the Anthropic client mocked — runs offline.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from uuid import uuid4
 import pytest
 
 from app.models.client_config import ClientConfig
+from app.models.contact import Contact
 from app.prompts import greeting
 
 
@@ -27,55 +28,79 @@ def _make_config(**overrides: Any) -> ClientConfig:
     return ClientConfig(**base)
 
 
+def _contact(name: str | None = "Maria", **overrides: Any) -> Contact:
+    now = datetime.now(UTC)
+    base: dict[str, Any] = {
+        "id": uuid4(), "client_id": uuid4(), "phone": "+15551112222",
+        "name": name, "first_seen_at": now, "last_seen_at": now, "updated_at": now,
+    }
+    base.update(overrides)
+    return Contact(**base)
+
+
 def _fake_response(text: str) -> Mock:
-    """Stand-in for an Anthropic Messages response carrying one text block."""
     resp = Mock()
     resp.content = [Mock(type="text", text=text)]
     return resp
 
 
 # ---------------------------------------------------------------------------
-# Template rendering (pure)
+# Variant selection — never guess a name
 # ---------------------------------------------------------------------------
 
-def test_render_prompt_fills_business_context():
+
+def test_returning_selected_for_recognized_named_caller() -> None:
+    contact = _contact(name="Maria", call_count=2)
+    assert greeting._select_version(_make_config(), contact, is_returning=True) == "returning_v1"
+
+
+def test_neutral_when_name_missing() -> None:
+    contact = _contact(name=None, call_count=5, crm_external_id="hs-1")
+    # No name → never the returning variant (never guess a name).
+    assert greeting._select_version(_make_config(), contact, is_returning=True) == "neutral_v1"
+
+
+def test_neutral_when_recognition_disabled() -> None:
+    contact = _contact(name="Maria")
+    config = _make_config(conversation_config={"recognize_returning_callers": False})
+    assert greeting._select_version(config, contact, is_returning=True) == "neutral_v1"
+
+
+def test_returning_for_crm_linked_contact_even_first_call() -> None:
+    contact = _contact(name="Maria", crm_external_id="hs-1")
+    assert greeting._select_version(_make_config(), contact, is_returning=False) == "returning_v1"
+
+
+# ---------------------------------------------------------------------------
+# Static acks
+# ---------------------------------------------------------------------------
+
+
+def test_customer_ack_uses_template() -> None:
     config = _make_config(
-        brand={
-            "business_name": "Acme Surfaces",
-            "category": "countertop",
-            "tone_of_voice": "casual",
-        },
-        service_area_zips=["89101", "89102"],
+        existing_customer_template="Hey! {business_name} here, someone will call you back.",
+        brand={"business_name": "Acme"},
     )
-    prompt = greeting._render_prompt(config, "v1")
-    assert "Acme Surfaces" in prompt
-    assert "countertop" in prompt
-    assert "casual" in prompt
-    assert "89101" in prompt
+    assert "Acme" in greeting.render_customer_ack(config)
 
 
-def test_render_prompt_uses_fallbacks():
-    prompt = greeting._render_prompt(_make_config(), "v1")
-    assert "our team" in prompt        # no business_name configured
-    assert "the local area" in prompt  # no service-area ZIPs
+def test_customer_ack_default_when_unset() -> None:
+    config = _make_config(brand={"business_name": "Acme"})
+    assert greeting.render_customer_ack(config).startswith("Hi! Thanks for calling Acme")
 
 
-def test_render_prompt_unknown_version_falls_back_to_default():
-    prompt = greeting._render_prompt(_make_config(), "v99")
-    assert "SMS" in prompt  # rendered the default template, did not raise
-
-
-def test_service_area_truncates_to_first_three_zips():
-    config = _make_config(service_area_zips=["1", "2", "3", "4", "5"])
-    assert greeting._service_area(config) == "1, 2, 3"
+def test_vendor_ack_default_is_minimal() -> None:
+    config = _make_config(brand={"business_name": "Acme"})
+    assert "Acme" in greeting.render_vendor_ack(config)
 
 
 # ---------------------------------------------------------------------------
 # generate_greeting (Anthropic client mocked)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
-async def test_generate_greeting_none_without_api_key():
+async def test_generate_greeting_none_without_api_key() -> None:
     with patch("app.prompts.greeting.get_settings") as mock_settings:
         mock_settings.return_value.anthropic_api_key = ""
         result = await greeting.generate_greeting(_make_config())
@@ -83,7 +108,7 @@ async def test_generate_greeting_none_without_api_key():
 
 
 @pytest.mark.asyncio
-async def test_generate_greeting_returns_text_and_version():
+async def test_generate_greeting_returns_text_and_version() -> None:
     mock_client = Mock()
     mock_client.messages.create = AsyncMock(return_value=_fake_response("  Hi from Acme!  "))
 
@@ -94,12 +119,34 @@ async def test_generate_greeting_returns_text_and_version():
         mock_settings.return_value.anthropic_api_key = "sk-ant-test"
         result = await greeting.generate_greeting(_make_config())
 
-    assert result == ("Hi from Acme!", "v1")  # text stripped, version resolved
-    assert mock_client.messages.create.call_args.kwargs["model"] == "claude-haiku-4-5"
+    assert result == ("Hi from Acme!", "neutral_v1")  # first-timer → neutral
+    kwargs = mock_client.messages.create.call_args.kwargs
+    assert kwargs["model"] == "claude-haiku-4-5"
+    # System is content blocks; the business block is cached.
+    assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
 
 
 @pytest.mark.asyncio
-async def test_generate_greeting_none_on_api_error():
+async def test_generate_greeting_returning_variant_for_known_caller() -> None:
+    mock_client = Mock()
+    mock_client.messages.create = AsyncMock(return_value=_fake_response("Hi Maria!"))
+    contact = _contact(name="Maria", call_count=2)
+
+    with (
+        patch("app.prompts.greeting.get_settings") as mock_settings,
+        patch("app.prompts.greeting.get_anthropic_client", return_value=mock_client),
+    ):
+        mock_settings.return_value.anthropic_api_key = "sk-ant-test"
+        result = await greeting.generate_greeting(_make_config(), contact, is_returning=True)
+
+    assert result == ("Hi Maria!", "returning_v1")
+    # The caller block is present so the model can greet by name.
+    system_text = " ".join(b["text"] for b in mock_client.messages.create.call_args.kwargs["system"])
+    assert "Maria" in system_text
+
+
+@pytest.mark.asyncio
+async def test_generate_greeting_none_on_api_error() -> None:
     mock_client = Mock()
     mock_client.messages.create = AsyncMock(side_effect=Exception("api down"))
 
@@ -114,7 +161,7 @@ async def test_generate_greeting_none_on_api_error():
 
 
 @pytest.mark.asyncio
-async def test_generate_greeting_none_on_empty_text():
+async def test_generate_greeting_none_on_empty_text() -> None:
     mock_client = Mock()
     mock_client.messages.create = AsyncMock(return_value=_fake_response("   "))
 

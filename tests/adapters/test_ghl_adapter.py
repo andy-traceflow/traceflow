@@ -135,6 +135,26 @@ def test_canonical_dict_includes_all_known_fields():
     assert expected_keys.issubset(canonical.keys())
 
 
+def test_dotted_qualification_data_pushes_to_custom_field():
+    """A non-canonical qualification field (material) maps to a CRM custom field
+    via a dotted-path canonical_field."""
+    adapter = GoHighLevelAdapter()
+    lead = _make_lead(qualification_data={"material": "quartz", "project_stage": "pricing"})
+    canonical = GoHighLevelAdapter._canonical_dict(lead)
+    assert canonical["qualification_data.material"] == "quartz"
+
+    mappings = {
+        "qualification_data.material": FieldMapping(
+            canonical_field="qualification_data.material",
+            external_field="cf_material_id",
+            external_field_type="custom_field",
+            transform=None,
+        ),
+    }
+    body = adapter._build_contact_body(canonical, mappings)
+    assert body["customFields"] == [{"id": "cf_material_id", "field_value": "quartz"}]
+
+
 # ---------------------------------------------------------------------------
 # health_check
 # ---------------------------------------------------------------------------

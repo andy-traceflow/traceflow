@@ -22,14 +22,27 @@ from fastapi import APIRouter, BackgroundTasks, Request, Response
 from app.adapters.registry import get_adapter
 from app.db import set_tenant_context
 from app.models.client_config import ClientConfig
+from app.models.contact import Contact, ContactType
 from app.models.lead import Lead, LeadCreate, LeadUpdate, QualificationStatus
 from app.models.message import Message
-from app.prompts.greeting import generate_greeting
+from app.prompts.greeting import generate_greeting, render_customer_ack, render_vendor_ack
 from app.prompts.intent import DEFAULT_INTENT_VERSION, Intent, classify_intent
 from app.prompts.qualifier import qualifier_turn
+from app.prompts.summarize import persist_summary, summarize_conversation
 from app.services.classification import Route, classify_caller
+from app.services.contacts import merge_person_facts, resolve_contact
 from app.services.dedupe import is_duplicate
 from app.services.owner_alert import alert_existing_customer, alert_owner, find_vip_reason
+from app.services.qualification import (
+    TerminationReason,
+    check_hard_gates,
+    completeness_score,
+    get_schema,
+    merge_state,
+    should_terminate,
+    split_extracted,
+    value_score,
+)
 from app.services.sms import send_sms
 
 logger = logging.getLogger(__name__)
@@ -51,6 +64,14 @@ _CRM_PUSH_STATUSES = frozenset(
     {QualificationStatus.qualified, QualificationStatus.high_value}
 )
 
+# Deterministic termination → the lead's terminal status. Code owns this now;
+# the qualifier no longer sets qualification_status.
+_STATUS_BY_TERMINATION: dict[TerminationReason, QualificationStatus] = {
+    TerminationReason.qualified: QualificationStatus.qualified,
+    TerminationReason.disqualified: QualificationStatus.disqualified,
+    TerminationReason.needs_review: QualificationStatus.needs_review,
+}
+
 # Twilio reads a webhook's HTTP response body as TwiML. Every real message
 # (greeting, qualifier reply, owner alert) is sent asynchronously via the REST
 # API in the background task, so the synchronous ack must be an EMPTY TwiML
@@ -63,6 +84,16 @@ _TWIML_ACK = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
 def _ack() -> Response:
     """Empty-TwiML 200 — tells Twilio 'received, nothing to say synchronously'."""
     return Response(status_code=200, content=_TWIML_ACK, media_type="application/xml")
+
+
+_DEFAULT_TIMEZONE = "America/Los_Angeles"
+
+
+async def _fetch_timezone(conn: Any, client_id: UUID) -> str:
+    """The client's timezone (clients.timezone) for the prompt context's time
+    block. Falls back to a default if unset or unreadable."""
+    tz = await conn.fetchval("SELECT timezone FROM clients WHERE id = $1", client_id)
+    return tz if isinstance(tz, str) and tz else _DEFAULT_TIMEZONE
 
 
 @router.post("/missed-call/{client_id}")
@@ -147,11 +178,19 @@ async def _process_missed_call(client_id: UUID, payload: dict[str, Any]) -> None
             logger.error("missed call: no client_config", extra={"client_id": str(client_id)})
             return
         config = ClientConfig(**dict(config_row))
+        timezone = await _fetch_timezone(conn, client_id)
 
         result = await classify_caller(conn, client_id, caller, config)
 
-        # Active conversation: a lead is already open for this caller. Don't
-        # spawn a duplicate or re-greet — just record the repeat call.
+        # Every missed call bumps the contact's call_count (when we have one).
+        if result.contact is not None:
+            await conn.execute(
+                "UPDATE contacts SET call_count = call_count + 1 WHERE id = $1",
+                result.contact.id,
+            )
+
+        # Active conversation: a lead is already open and fresh. Don't spawn a
+        # duplicate or re-greet — just record the repeat call.
         if result.route == Route.active_conversation:
             await conn.execute(
                 """
@@ -168,36 +207,67 @@ async def _process_missed_call(client_id: UUID, payload: dict[str, Any]) -> None
             )
             return
 
-        lead_row = await conn.fetchrow(
-            """
-            INSERT INTO leads
-                (client_id, external_id, source_system, phone, raw_payload, classification)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id
-            """,
-            client_id,
-            lead.external_id,
-            lead.source_system,
-            lead.phone,
-            payload,
-            result.classification.value,
-        )
-        lead_id = lead_row["id"] if lead_row else None
+        if result.route == Route.resumed_conversation and result.existing_lead_id is not None:
+            # Stale-open lead resumed — reuse it (no duplicate CRM record) and
+            # re-greet. The recognition greeting content lands in Slice 4.
+            lead_id = result.existing_lead_id
+            await conn.execute(
+                """
+                INSERT INTO events (client_id, lead_id, event_type, payload)
+                VALUES ($1, $2, 'conversation_resumed', $3)
+                """,
+                client_id,
+                lead_id,
+                {"call_sid": call_sid, "reason": result.reason},
+            )
+        else:
+            # A new lead for every other route. A returning contact (or a resume
+            # without reuse) pre-populates person-scoped facts so we don't
+            # re-ask for what we already know.
+            seed_name: str | None = None
+            seed_address: str | None = None
+            if result.is_returning and result.contact is not None:
+                facts = result.contact.known_facts
+                seed_name = facts.get("contact_name")
+                seed_address = facts.get("address")
+            contact_id = result.contact.id if result.contact else None
 
-        await conn.execute(
-            """
-            INSERT INTO events (client_id, lead_id, event_type, payload)
-            VALUES ($1, $2, 'twilio_missed_call_received', $3)
-            """,
-            client_id,
-            lead_id,
-            {
-                "call_sid": call_sid,
-                "route": result.route.value,
-                "classification": result.classification.value,
-                "reason": result.reason,
-            },
-        )
+            lead_row = await conn.fetchrow(
+                """
+                INSERT INTO leads
+                    (client_id, external_id, source_system, phone, raw_payload,
+                     classification, contact_id, contact_name, address)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                RETURNING id
+                """,
+                client_id,
+                lead.external_id,
+                lead.source_system,
+                lead.phone,
+                payload,
+                result.classification.value,
+                contact_id,
+                seed_name,
+                seed_address,
+            )
+            lead_id = lead_row["id"] if lead_row else None
+
+            event_type = "returning_contact" if result.is_returning else "twilio_missed_call_received"
+            await conn.execute(
+                f"""
+                INSERT INTO events (client_id, lead_id, event_type, payload)
+                VALUES ($1, $2, '{event_type}', $3)
+                """,
+                client_id,
+                lead_id,
+                {
+                    "call_sid": call_sid,
+                    "route": result.route.value,
+                    "classification": result.classification.value,
+                    "reason": result.reason,
+                    "is_returning": result.is_returning,
+                },
+            )
 
     # Existing customer reaching voicemail is a priority service event —
     # alert the business regardless of whether the caller is also texted.
@@ -241,17 +311,30 @@ async def _process_missed_call(client_id: UUID, payload: dict[str, Any]) -> None
         logger.warning("missed call: client has no twilio_number configured", extra={"client_id": str(client_id)})
         return
 
-    ai_result = await generate_greeting(config)
-    if ai_result is not None:
-        greeting, greeting_version = ai_result
-        ai_generated = True
-        prompt_version = f"greeting:{greeting_version}"
-    else:
-        # No API key, or the AI call failed — fall back to the static
-        # template so the lead still gets a text.
-        greeting = _render_greeting(config)
+    # Route-specific greeting. Existing customers and vendors get a static
+    # service ack (no sales qualification, no AI); everyone else gets the AI
+    # greeting — neutral for a first-timer, recognition for a returning caller.
+    if result.route == Route.existing_customer:
+        greeting = render_customer_ack(config)
         ai_generated = False
-        prompt_version = None
+        prompt_version = "greeting:customer_ack"
+    elif result.route == Route.known_non_lead:
+        greeting = render_vendor_ack(config)
+        ai_generated = False
+        prompt_version = "greeting:vendor_ack"
+    else:
+        ai_result = await generate_greeting(
+            config, result.contact, is_returning=result.is_returning, timezone=timezone
+        )
+        if ai_result is not None:
+            greeting, greeting_version = ai_result
+            ai_generated = True
+            prompt_version = f"greeting:{greeting_version}"
+        else:
+            # No API key, or the AI call failed — fall back to a static template.
+            greeting = _render_greeting(config)
+            ai_generated = False
+            prompt_version = None
 
     sms_result = await send_sms(to=caller, body=greeting, from_number=config.twilio_number)
 
@@ -277,6 +360,7 @@ async def _process_missed_call(client_id: UUID, payload: dict[str, Any]) -> None
                 prompt_version,
                 sms_result,
             )
+            await _touch_lead_activity(conn, lead_id, client_id, direction="outbound")
             await conn.execute(
                 """
                 INSERT INTO events (client_id, lead_id, event_type, payload)
@@ -340,32 +424,9 @@ async def _process_sms_reply(client_id: UUID, payload: dict[str, Any]) -> None:
         logger.warning("sms reply: missing From or Body", extra={"client_id": str(client_id)})
         return
 
-    # Block 1: find the active lead, persist the inbound message, load history.
+    # Block 1: resolve the contact, find or OPEN a lead, persist the inbound
+    # message + activity, load history.
     async with set_tenant_context(client_id) as conn:
-        lead_row = await conn.fetchrow(
-            """
-            SELECT id, qualification_status, budget_range, contact_name, service_type
-            FROM leads
-            WHERE client_id = $1 AND phone = $2
-              AND qualification_status IN ('unqualified', 'qualifying')
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
-            client_id,
-            caller,
-        )
-        if lead_row is None:
-            logger.warning(
-                "sms reply: no active lead for caller — ignoring",
-                extra={"client_id": str(client_id)},
-            )
-            return
-        lead_id = lead_row["id"]
-        prior_status = lead_row["qualification_status"]
-        prior_budget = lead_row["budget_range"]
-        prior_contact_name = lead_row["contact_name"]
-        prior_service_type = lead_row["service_type"]
-
         config_row = await conn.fetchrow(
             "SELECT * FROM client_configs WHERE client_id = $1", client_id
         )
@@ -373,6 +434,70 @@ async def _process_sms_reply(client_id: UUID, payload: dict[str, Any]) -> None:
             logger.error("sms reply: no client_config", extra={"client_id": str(client_id)})
             return
         config = ClientConfig(**dict(config_row))
+        timezone = await _fetch_timezone(conn, client_id)
+
+        contact = await resolve_contact(conn, client_id, caller, config.default_phone_region)
+
+        # A blocked or spam contact never gets a reply.
+        if contact.contact_type in (ContactType.blocked, ContactType.spam):
+            await conn.execute(
+                """
+                INSERT INTO events (client_id, lead_id, event_type, payload)
+                VALUES ($1, NULL, 'inbound_sms_dropped', $2)
+                """,
+                client_id,
+                {"contact_type": contact.contact_type.value, "reason": "blocked_or_spam_contact"},
+            )
+            logger.info(
+                "sms reply dropped: blocked/spam contact",
+                extra={"client_id": str(client_id), "contact_id": str(contact.id)},
+            )
+            return
+
+        lead_row = await conn.fetchrow(
+            """
+            SELECT *
+            FROM leads
+            WHERE contact_id = $1 AND qualification_status IN ('unqualified', 'qualifying')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            contact.id,
+        )
+        if lead_row is None:
+            # No open lead: a cold inbound (texted without calling first) or a
+            # follow-up after a terminal status. Either way it's a real lead —
+            # open a new one linked to the contact, seeded with known facts.
+            # This closes the silent-drop bug: an inbound SMS is never ignored.
+            facts = contact.known_facts
+            lead_row = await conn.fetchrow(
+                """
+                INSERT INTO leads
+                    (client_id, source_system, phone, raw_payload, classification,
+                     contact_id, contact_name, address)
+                VALUES ($1, 'twilio_sms_inbound', $2, $3, 'potential_lead', $4, $5, $6)
+                RETURNING *
+                """,
+                client_id,
+                caller,
+                payload,
+                contact.id,
+                facts.get("contact_name"),
+                facts.get("address"),
+            )
+            await conn.execute(
+                """
+                INSERT INTO events (client_id, lead_id, event_type, payload)
+                VALUES ($1, $2, 'inbound_sms_lead_opened', $3)
+                """,
+                client_id,
+                lead_row["id"],
+                {"from": caller, "contact_id": str(contact.id)},
+            )
+
+        lead = Lead(**dict(lead_row))
+        lead_id = lead.id
+        prior_status = lead.qualification_status
 
         await conn.execute(
             """
@@ -384,6 +509,7 @@ async def _process_sms_reply(client_id: UUID, payload: dict[str, Any]) -> None:
             body,
             payload,
         )
+        await _touch_lead_activity(conn, lead_id, client_id, direction="inbound")
         history_rows = await conn.fetch(
             """
             SELECT * FROM messages
@@ -406,12 +532,22 @@ async def _process_sms_reply(client_id: UUID, payload: dict[str, Any]) -> None:
     # customers, non-leads, and spam route off the sales track and return here.
     if prior_status == QualificationStatus.unqualified:
         proceed = await _route_first_reply_intent(
-            client_id, lead_id, config, history, caller=caller
+            client_id, lead_id, config, history, caller=caller,
+            contact=contact, timezone=timezone,
         )
         if not proceed:
             return
 
-    turn = await qualifier_turn(config, history)
+    # Deterministic loop control (Slice 3): build the captured state, ask the
+    # model for the next question + extractions, then let CODE decide scoring
+    # and termination. The model never sets qualification_status.
+    schema = get_schema(config)
+    state = merge_state(lead, contact)
+    current_turn = lead.turn_count + 1  # includes the inbound just recorded
+
+    turn = await qualifier_turn(
+        config, history, schema, state, current_turn, contact=contact, timezone=timezone
+    )
 
     if turn is None:
         # Qualifier unavailable — the inbound message is saved; flag for a human.
@@ -436,21 +572,57 @@ async def _process_sms_reply(client_id: UUID, payload: dict[str, Any]) -> None:
         return
 
     reply_text, extracted, version = turn
-    updates = LeadUpdate(**extracted).model_dump(exclude_unset=True) if extracted else {}
+    # Split extractions: canonical → leads columns; the rest → qualification_data;
+    # person-scoped → contacts.known_facts.
+    canonical, qual_data, person = split_extracted(schema, extracted)
+    updates = LeadUpdate(**canonical).model_dump(exclude_unset=True) if canonical else {}
+
+    # Deterministic scoring + termination over the post-turn state.
+    new_state = {**state, **canonical, **qual_data}
+    completeness = completeness_score(schema, new_state)
+    value = value_score(schema, new_state, config)
+    gate = check_hard_gates(schema, new_state, config)
+    termination = (
+        TerminationReason.disqualified
+        if gate is not None
+        else should_terminate(schema, new_state, current_turn)
+    )
+    new_status = _STATUS_BY_TERMINATION.get(termination) if termination else None
 
     sms_result = None
     if reply_text and config.twilio_number:
         sms_result = await send_sms(to=caller, body=reply_text, from_number=config.twilio_number)
 
-    # Block 2: apply extracted fields, record the outbound message + events.
+    # Block 2: apply extractions + scores + status + person facts; record output.
     async with set_tenant_context(client_id) as conn:
         if updates:
             await _apply_lead_updates(conn, lead_id, client_id, updates)
+        if qual_data:
+            await conn.execute(
+                "UPDATE leads SET qualification_data = qualification_data || $2::jsonb "
+                "WHERE id = $1 AND client_id = $3",
+                lead_id,
+                qual_data,
+                client_id,
+            )
         await conn.execute(
-            "UPDATE client_configs SET ai_interactions_used = ai_interactions_used + 1 "
-            "WHERE client_id = $1",
+            "UPDATE leads SET qualification_score = $2, value_score = $3 "
+            "WHERE id = $1 AND client_id = $4",
+            lead_id,
+            completeness,
+            value,
             client_id,
         )
+        if new_status is not None:
+            await conn.execute(
+                "UPDATE leads SET qualification_status = $2 WHERE id = $1 AND client_id = $3",
+                lead_id,
+                new_status.value,
+                client_id,
+            )
+        if person:
+            await merge_person_facts(conn, contact.id, person, schema)
+        await _bill_ai_interaction(conn, client_id)
         if sms_result:
             await conn.execute(
                 """
@@ -465,6 +637,7 @@ async def _process_sms_reply(client_id: UUID, payload: dict[str, Any]) -> None:
                 f"qualifier:{version}",
                 sms_result,
             )
+            await _touch_lead_activity(conn, lead_id, client_id, direction="outbound")
         await conn.execute(
             """
             INSERT INTO events (client_id, lead_id, event_type, payload)
@@ -472,7 +645,13 @@ async def _process_sms_reply(client_id: UUID, payload: dict[str, Any]) -> None:
             """,
             client_id,
             lead_id,
-            {"fields_extracted": sorted(updates.keys()), "reply_sent": sms_result is not None},
+            {
+                "fields_extracted": sorted([*canonical.keys(), *qual_data.keys()]),
+                "completeness": completeness,
+                "value_score": value,
+                "termination": termination.value if termination else None,
+                "reply_sent": sms_result is not None,
+            },
         )
 
     logger.info(
@@ -480,15 +659,14 @@ async def _process_sms_reply(client_id: UUID, payload: dict[str, Any]) -> None:
         extra={
             "client_id": str(client_id),
             "lead_id": str(lead_id),
-            "fields_extracted": len(updates),
+            "completeness": completeness,
+            "termination": termination.value if termination else None,
         },
     )
 
-    # crm_push (workflow-schema Section 3): a lead the qualifier just moved to
-    # a qualified state lands in the client's CRM automatically. No-op when the
-    # turn didn't qualify it, when the client has no CRM, or when it was already
-    # pushed — all handled inside the helper.
-    new_status = updates.get("qualification_status") or prior_status
+    # crm_push (workflow-schema Section 3): a lead CODE just moved to a qualified
+    # state lands in the client's CRM automatically. No-op when the turn didn't
+    # qualify it, the client has no CRM, or it was already pushed.
     if new_status in _CRM_PUSH_STATUSES:
         await _maybe_push_to_crm(client_id, lead_id, config)
 
@@ -499,11 +677,16 @@ async def _process_sms_reply(client_id: UUID, payload: dict[str, Any]) -> None:
             lead_id,
             config,
             history,
-            budget_range=updates.get("budget_range") or prior_budget,
-            contact_name=updates.get("contact_name") or prior_contact_name,
-            service_type=updates.get("service_type") or prior_service_type,
+            budget_range=canonical.get("budget_range") or lead.budget_range,
+            contact_name=canonical.get("contact_name") or lead.contact_name,
+            service_type=canonical.get("service_type") or lead.service_type,
             caller=caller,
         )
+
+    # On a terminal transition, roll the conversation into a durable contact
+    # summary so the next call arrives with context. One AI interaction; non-fatal.
+    if new_status is not None:
+        await _summarize_on_terminal(client_id, config, contact, lead, history, schema)
 
 
 async def _route_first_reply_intent(
@@ -513,6 +696,8 @@ async def _route_first_reply_intent(
     history: list[Message],
     *,
     caller: str,
+    contact: Contact | None = None,
+    timezone: str = _DEFAULT_TIMEZONE,
 ) -> bool:
     """Triage the first inbound reply before qualification.
 
@@ -525,7 +710,7 @@ async def _route_first_reply_intent(
 
     A real classification (intent is not None) bills one AI interaction.
     """
-    intent = await classify_intent(config, history)
+    intent = await classify_intent(config, history, contact=contact, timezone=timezone)
     billable = intent is not None
 
     if intent is None or intent == Intent.sales:
@@ -611,6 +796,7 @@ async def _route_first_reply_intent(
                 f"intent:{DEFAULT_INTENT_VERSION}",
                 sms_result,
             )
+            await _touch_lead_activity(conn, lead_id, client_id, direction="outbound")
         await _record_intent_event(conn, client_id, lead_id, intent, proceeded=False)
     logger.info(
         "intent: ambiguous — clarifying question sent",
@@ -619,11 +805,66 @@ async def _route_first_reply_intent(
     return False
 
 
+async def _summarize_on_terminal(
+    client_id: UUID,
+    config: ClientConfig,
+    contact: Contact | None,
+    lead: Lead,
+    history: list[Message],
+    schema: Any,
+) -> None:
+    """Distill a just-finished conversation into a durable contact summary +
+    person facts (summarize.py). One AI interaction; failure is non-fatal."""
+    if contact is None:
+        return
+    result = await summarize_conversation(config, contact, lead, history)
+    if result is None:
+        return
+    summary, person_facts = result
+    async with set_tenant_context(client_id) as conn:
+        await persist_summary(conn, contact, summary, person_facts, schema)
+        await _bill_ai_interaction(conn, client_id)
+        await conn.execute(
+            """
+            INSERT INTO events (client_id, lead_id, event_type, payload)
+            VALUES ($1, $2, 'conversation_summarized', $3)
+            """,
+            client_id,
+            lead.id,
+            {"summary": summary},
+        )
+    logger.info(
+        "conversation summarized onto contact",
+        extra={"client_id": str(client_id), "contact_id": str(contact.id)},
+    )
+
+
 async def _bill_ai_interaction(conn: Any, client_id: UUID) -> None:
     """Charge one AI interaction against the client's monthly cap."""
     await conn.execute(
         "UPDATE client_configs SET ai_interactions_used = ai_interactions_used + 1 "
         "WHERE client_id = $1",
+        client_id,
+    )
+
+
+async def _touch_lead_activity(
+    conn: Any,
+    lead_id: UUID,
+    client_id: UUID,
+    *,
+    direction: str,
+) -> None:
+    """Advance a lead's conversation state on every message (migration 019).
+
+    Bumps last_inbound_at / last_outbound_at and turn_count so the resume window
+    (classify_caller) tracks real activity, not just creation time. `direction`
+    is a fixed 'inbound'/'outbound' literal from the caller, never user input."""
+    column = "last_inbound_at" if direction == "inbound" else "last_outbound_at"
+    await conn.execute(
+        f"UPDATE leads SET {column} = now(), turn_count = turn_count + 1 "
+        "WHERE id = $1 AND client_id = $2",
+        lead_id,
         client_id,
     )
 

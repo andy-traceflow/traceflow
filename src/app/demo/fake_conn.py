@@ -48,6 +48,13 @@ def _norm(sql: str) -> str:
     return " ".join(sql.split())
 
 
+def _contact_matches(contact: dict[str, Any], search: str) -> bool:
+    """Mirror the contacts list search (phone/name ILIKE)."""
+    if not search:
+        return True
+    return search in (contact["phone"] or "").lower() or search in (contact["name"] or "").lower()
+
+
 def _messages_for(bundle: dict[str, Any], lead_id: Any) -> list[dict[str, Any]]:
     messages: dict[Any, list[dict[str, Any]]] = bundle["messages"]
     return messages.get(lead_id, [])
@@ -89,6 +96,13 @@ class FakeConn:
         if "JOIN client_configs cc ON" in sql:  # _CONFIG_SELECT
             bundle = self._bundle(args[0])
             return dict(bundle["config"]) if bundle else None
+        if "SELECT * FROM contacts WHERE id" in sql:  # get_contact (contact_id=$1, client_id=$2)
+            bundle = self._bundle(args[1])
+            if bundle is None:
+                return None
+            return next(
+                (dict(c) for c in bundle.get("contacts", []) if c["id"] == args[0]), None
+            )
         if "SELECT * FROM leads" in sql:  # get_lead / repush (lead_id=$1, client_id=$2)
             lead = self._find_lead(args[1], args[0])
             return dict(lead) if lead else None
@@ -120,8 +134,40 @@ class FakeConn:
         return None
 
     # -- fetch -------------------------------------------------------------
+    _CONTACT_LIST_COLS = (
+        "id", "phone", "name", "contact_type", "contact_type_source",
+        "call_count", "lead_count", "last_seen_at", "summary",
+    )
+    _CONTACT_LEAD_COLS = (
+        "id", "created_at", "qualification_status", "classification", "service_type",
+        "qualification_score", "value_score", "outcome", "recovered_value",
+    )
+
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
         sql = _norm(sql)
+        if "FROM contacts" in sql:  # list_contacts (client=$1, type=$2, search=$3, limit=$4, offset=$5)
+            bundle = self._bundle(args[0])
+            if bundle is None:
+                return []
+            ctype, search, limit, offset = args[1], (args[2] or "").lower(), args[3], args[4]
+            rows = [
+                {k: c[k] for k in self._CONTACT_LIST_COLS}
+                for c in bundle.get("contacts", [])
+                if (ctype == "all" or c["contact_type"] == ctype)
+                and _contact_matches(c, search)
+            ]
+            rows.sort(key=lambda r: r["last_seen_at"], reverse=True)
+            return rows[offset:offset + limit]
+        if "FROM leads" in sql and "contact_id = $1" in sql:  # get_contact leads (contact=$1, client=$2)
+            bundle = self._bundle(args[1])
+            if bundle is None:
+                return []
+            rows = [
+                {k: ld.get(k) for k in self._CONTACT_LEAD_COLS}
+                for ld in bundle["leads"] if ld.get("contact_id") == args[0]
+            ]
+            rows.sort(key=lambda r: r["created_at"], reverse=True)
+            return rows
         if "FROM clients c" in sql and "LEFT JOIN client_configs" in sql:  # list_clients
             return [
                 dict(b["list_row"])
@@ -173,6 +219,18 @@ class FakeConn:
     # -- fetchval ----------------------------------------------------------
     async def fetchval(self, sql: str, *args: Any) -> Any:
         sql = _norm(sql)
+        if "count(*)" in sql and "FROM contacts" in sql:  # list_contacts total
+            bundle = self._bundle(args[0])
+            if bundle is None:
+                return 0
+            ctype, search = args[1], (args[2] or "").lower()
+            return sum(
+                1 for c in bundle.get("contacts", [])
+                if (ctype == "all" or c["contact_type"] == ctype) and _contact_matches(c, search)
+            )
+        if "SELECT 1 FROM contacts WHERE id" in sql:  # retype existence (contact=$1, client=$2)
+            bundle = self._bundle(args[1])
+            return 1 if bundle and any(c["id"] == args[0] for c in bundle.get("contacts", [])) else None
         if "SELECT 1 FROM clients" in sql:  # client_id=$1
             return 1 if self._bundle(args[0]) else None
         if "SELECT 1 FROM leads" in sql:  # lead_id=$1, client_id=$2

@@ -30,6 +30,8 @@ class QualificationStatus(StrEnum):
     # Terminal post-reply intent outcomes (see prompts/intent.py).
     support_touch = "support_touch"
     non_lead_contact = "non_lead_contact"
+    # Hard-gate failure (out of service area, below a disqualify_if floor).
+    disqualified = "disqualified"
 
 
 class Classification(StrEnum):
@@ -69,6 +71,10 @@ class Lead(BaseModel):
     external_id: str | None = None
     source_system: str
 
+    # Link up to the durable contact (migration 018). Nullable: a lead may
+    # predate its backfilled contact, or the contact may have been deleted.
+    contact_id: UUID | None = None
+
     contact_name: str | None = None
     contact_company: str | None = None
     phone: str | None = None
@@ -81,7 +87,13 @@ class Lead(BaseModel):
     timeframe: str | None = None
 
     qualification_status: QualificationStatus = QualificationStatus.unqualified
+    # Completeness score (migration 020): captured required weight / applicable
+    # required weight × 100. NEVER blended with value_score.
     qualification_score: int | None = None
+    # Deterministic estimate of the job's value, independent of completeness.
+    value_score: int | None = None
+    # Non-canonical captured fields (schema fields with no maps_to).
+    qualification_data: dict[str, Any] = Field(default_factory=dict)
     classification: Classification = Classification.potential_lead
 
     # Booked outcome (recovered-revenue attribution) — set by the revenue_sync
@@ -93,6 +105,11 @@ class Lead(BaseModel):
 
     notes: str = ""
     raw_payload: dict[str, Any]
+
+    # Conversation activity (migration 019) — drives resume/reopen windows.
+    last_inbound_at: datetime | None = None
+    last_outbound_at: datetime | None = None
+    turn_count: int = 0
 
     created_at: datetime
     qualified_at: datetime | None = None

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from . import activity, auth, clients, leads, mappings
+from . import activity, auth, clients, contacts, leads, mappings
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 router.include_router(auth.router)
@@ -25,3 +25,4 @@ router.include_router(clients.router)
 router.include_router(leads.router)
 router.include_router(activity.router)
 router.include_router(mappings.router)
+router.include_router(contacts.router)

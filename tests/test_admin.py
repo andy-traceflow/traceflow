@@ -235,6 +235,11 @@ def _config_join_row(client_id: Any, **overrides: Any) -> dict[str, Any]:
         "existing_customer_alert_contact": None,
         "vendor_allowlist": [],
         "revenue_config": {"mode": "crm", "monthly_fee": 397},
+        "conversation_config": {"resume_window_hours": 336},
+        "contact_config": {"source_of_truth": "auto"},
+        "qualification_schema": {},
+        "existing_customer_template": None,
+        "vendor_ack_template": None,
         "updated_at": datetime.now(UTC),
     }
     base.update(overrides)
@@ -995,3 +1000,191 @@ def test_ai_usage_reset(client):
     with _patch_conn("clients", conn):
         resp = client.post(f"/api/admin/clients/{cid}/ai-usage/reset", headers=_auth())
     assert resp.status_code == 404
+
+
+# ===========================================================================
+# Config: new Slice 2–3 blocks + qualification-schema validation
+# ===========================================================================
+
+
+def test_put_config_bad_qualification_schema_is_422(client):
+    # An enum field with no options fails the QualificationSchema model → 422
+    # at request validation, before the handler runs.
+    resp = client.put(
+        f"/api/admin/clients/{uuid4()}/config",
+        json={"qualification_schema": {"fields": [
+            {"key": "m", "label": "M", "type": "enum", "ask": "?"}
+        ]}},
+        headers=_auth(),
+    )
+    assert resp.status_code == 422
+
+
+def test_put_config_valid_qualification_schema_accepted(client):
+    cid = uuid4()
+    conn = AsyncMock()
+    conn.fetchval.return_value = 1  # client exists
+    conn.fetchrow.return_value = _config_join_row(cid)  # _CONFIG_SELECT re-fetch
+    valid = {"fields": [
+        {"key": "contact_name", "label": "Name", "type": "string",
+         "maps_to": "contact_name", "ask": "Your name?"}
+    ]}
+    with _patch_conn("clients", conn), _patch_audit("clients"):
+        resp = client.put(
+            f"/api/admin/clients/{cid}/config",
+            json={"qualification_schema": valid},
+            headers=_auth(),
+        )
+    assert resp.status_code == 200
+    assert any("UPDATE client_configs" in c.args[0] for c in conn.execute.call_args_list)
+
+
+# ===========================================================================
+# Contacts (Slice 5)
+# ===========================================================================
+
+
+def _contact_row(client_id: Any, **overrides: Any) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    base: dict[str, Any] = {
+        "id": uuid4(), "client_id": client_id, "phone": "+15551112222", "name": "Maria",
+        "contact_type": "prospect", "contact_type_source": "inferred", "contact_type_at": now,
+        "contact_type_reason": None, "crm_external_id": None, "known_facts": {"zip": "89101"},
+        "summary": "Prior countertop inquiry.", "last_intent": None,
+        "call_count": 2, "lead_count": 1, "first_seen_at": now, "last_seen_at": now,
+        "updated_at": now,
+    }
+    base.update(overrides)
+    return base
+
+
+def _contact_list_row(**overrides: Any) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    base: dict[str, Any] = {
+        "id": uuid4(), "phone": "+15551112222", "name": "Maria", "contact_type": "prospect",
+        "contact_type_source": "inferred", "call_count": 2, "lead_count": 1,
+        "last_seen_at": now, "summary": None,
+    }
+    base.update(overrides)
+    return base
+
+
+def _contact_lead_row(**overrides: Any) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    base: dict[str, Any] = {
+        "id": uuid4(), "created_at": now, "qualification_status": "qualified",
+        "classification": "potential_lead", "service_type": "countertop",
+        "qualification_score": 80, "value_score": 65, "outcome": "open", "recovered_value": None,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_list_contacts(client):
+    cid = uuid4()
+    conn = AsyncMock()
+    conn.fetch.return_value = [_contact_list_row(), _contact_list_row(contact_type="customer")]
+    conn.fetchval.return_value = 2
+    with _patch_conn("contacts", conn):
+        resp = client.get(f"/api/admin/clients/{cid}/contacts", headers=_auth())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 2
+    assert len(body["data"]) == 2
+
+
+def test_list_contacts_threads_type_and_search(client):
+    cid = uuid4()
+    conn = AsyncMock()
+    conn.fetch.return_value = []
+    conn.fetchval.return_value = 0
+    with _patch_conn("contacts", conn):
+        resp = client.get(
+            f"/api/admin/clients/{cid}/contacts?contact_type=customer&search=maria",
+            headers=_auth(),
+        )
+    assert resp.status_code == 200
+    args = conn.fetch.call_args.args
+    assert args[2] == "customer"  # $2 type filter
+    assert args[3] == "maria"     # $3 search
+
+
+def test_get_contact_detail_includes_leads_and_scores(client):
+    cid, contact_id = uuid4(), uuid4()
+    conn = AsyncMock()
+    conn.fetchrow.return_value = _contact_row(cid, id=contact_id)
+    conn.fetch.return_value = [_contact_lead_row()]
+    with _patch_conn("contacts", conn):
+        resp = client.get(f"/api/admin/clients/{cid}/contacts/{contact_id}", headers=_auth())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["summary"] == "Prior countertop inquiry."
+    assert body["known_facts"] == {"zip": "89101"}
+    assert body["leads"][0]["qualification_score"] == 80  # completeness
+    assert body["leads"][0]["value_score"] == 65          # value, kept separate
+
+
+def test_get_contact_404_wrong_client(client):
+    conn = AsyncMock()
+    conn.fetchrow.return_value = None  # client-scoped miss → 404
+    with _patch_conn("contacts", conn):
+        resp = client.get(f"/api/admin/clients/{uuid4()}/contacts/{uuid4()}", headers=_auth())
+    assert resp.status_code == 404
+
+
+def test_retype_contact_writes_manual(client):
+    cid, contact_id = uuid4(), uuid4()
+    conn = AsyncMock()
+    conn.fetchval.return_value = 1  # contact exists
+    with (
+        _patch_conn("contacts", conn),
+        _patch_audit("contacts"),
+        patch("app.routers.admin.contacts.set_contact_type",
+              new=AsyncMock(return_value=True)) as set_type,
+    ):
+        resp = client.patch(
+            f"/api/admin/clients/{cid}/contacts/{contact_id}",
+            json={"contact_type": "customer", "reason": "known client"},
+            headers=_auth(),
+        )
+    assert resp.status_code == 200
+    assert resp.json()["source"] == "manual"
+    assert set_type.await_args.args[3].value == "manual"  # source=manual, always
+
+
+def test_retype_contact_can_set_blocked(client):
+    cid, contact_id = uuid4(), uuid4()
+    conn = AsyncMock()
+    conn.fetchval.return_value = 1
+    with (
+        _patch_conn("contacts", conn),
+        _patch_audit("contacts"),
+        patch("app.routers.admin.contacts.set_contact_type", new=AsyncMock(return_value=True)),
+    ):
+        resp = client.patch(
+            f"/api/admin/clients/{cid}/contacts/{contact_id}",
+            json={"contact_type": "blocked"},
+            headers=_auth(),
+        )
+    assert resp.status_code == 200  # blocked is a manual-only decision — allowed here
+
+
+def test_retype_contact_404(client):
+    conn = AsyncMock()
+    conn.fetchval.return_value = None
+    with _patch_conn("contacts", conn), _patch_audit("contacts"):
+        resp = client.patch(
+            f"/api/admin/clients/{uuid4()}/contacts/{uuid4()}",
+            json={"contact_type": "customer"},
+            headers=_auth(),
+        )
+    assert resp.status_code == 404
+
+
+def test_retype_contact_bad_type_422(client):
+    resp = client.patch(
+        f"/api/admin/clients/{uuid4()}/contacts/{uuid4()}",
+        json={"contact_type": "vip"},  # not one of the six
+        headers=_auth(),
+    )
+    assert resp.status_code == 422

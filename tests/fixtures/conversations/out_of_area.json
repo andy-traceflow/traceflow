@@ -1,0 +1,7 @@
+{
+  "name": "out-of-area hard gate — zip not in service area",
+  "service_area_zips": ["89101"],
+  "state": {"address": "99999", "service_type": "countertop"},
+  "turn_count": 2,
+  "expect": {"gate": "out_of_service_area", "termination": "disqualified"}
+}

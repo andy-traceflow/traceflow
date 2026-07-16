@@ -26,6 +26,7 @@ TENANT_SCOPED_TABLES = [
     "client_configs",
     "client_field_mappings",
     "client_webhook_configs",
+    "contacts",
     "leads",
     "messages",
     "events",
@@ -115,6 +116,33 @@ async def test_leads_are_tenant_isolated(conn, two_clients: tuple[UUID, UUID]) -
     # Sanity: Client A still sees it
     await _set_tenant(conn, client_a)
     rows = await conn.fetch("SELECT id FROM leads WHERE id = $1", lead_id)
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_contacts_are_tenant_isolated(conn, two_clients: tuple[UUID, UUID]) -> None:
+    """Contacts carry durable caller identity + person facts across leads.
+    A leak would expose one client's customer list to another."""
+    client_a, client_b = two_clients
+
+    await _set_tenant(conn, client_a)
+    contact_id = await conn.fetchval(
+        """
+        INSERT INTO contacts (client_id, phone, name)
+        VALUES ($1, '+15551110000', 'Client A Contact')
+        RETURNING id
+        """,
+        client_a,
+    )
+    assert contact_id is not None
+
+    await _set_tenant(conn, client_b)
+    rows = await conn.fetch("SELECT id FROM contacts WHERE id = $1", contact_id)
+    assert rows == [], f"LEAK: Client B saw Client A's contact {contact_id}"
+
+    # Sanity: Client A still sees it.
+    await _set_tenant(conn, client_a)
+    rows = await conn.fetch("SELECT id FROM contacts WHERE id = $1", contact_id)
     assert len(rows) == 1
 
 

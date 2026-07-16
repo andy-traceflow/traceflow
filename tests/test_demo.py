@@ -29,6 +29,7 @@ from app.main import app
 ADMIN_SECRET = "test-admin-secret-value-32-bytes-long"  # ≥32 bytes
 A_CLIENT = str(next(iter(clients())))
 A_LEAD = str(clients()[next(iter(clients()))]["leads"][0]["id"])
+A_CONTACT = str(clients()[next(iter(clients()))]["contacts"][0]["id"])
 
 
 def _settings(demo_mode: bool = True) -> Mock:
@@ -136,6 +137,9 @@ def test_demo_token_reads_clients(client, demo_on):
         f"/api/admin/clients/{A_CLIENT}/routing-activity",
         f"/api/admin/clients/{A_CLIENT}/routing-log",
         f"/api/admin/clients/{A_CLIENT}/field-mappings",
+        f"/api/admin/clients/{A_CLIENT}/contacts",
+        f"/api/admin/clients/{A_CLIENT}/contacts?contact_type=customer&search=a",
+        f"/api/admin/clients/{A_CLIENT}/contacts/{A_CONTACT}",
     ],
 )
 def test_demo_token_reaches_every_read(client, demo_on, path):

@@ -42,6 +42,8 @@ SELECT c.id AS client_id, c.slug, c.business_name, c.status, c.tier, c.timezone,
        cc.ai_period_resets_at, cc.brand, cc.notification_emails, cc.owner_alert_emails,
        cc.owner_alert_phones, cc.feature_flags, cc.classification_config,
        cc.existing_customer_alert_contact, cc.vendor_allowlist, cc.revenue_config,
+       cc.conversation_config, cc.contact_config, cc.qualification_schema,
+       cc.existing_customer_template, cc.vendor_ack_template,
        cc.updated_at
 FROM clients c
 JOIN client_configs cc ON cc.client_id = c.id
@@ -111,6 +113,10 @@ async def update_client_config(
         # (matching migration 013's materialized default), never a partial
         # whose behavior would drift if code defaults ever change.
         updates["classification_config"] = body.classification_config.model_dump()
+    if "qualification_schema" in updates and body.qualification_schema is not None:
+        # Store the full validated schema (mode="json" so enums/literals become
+        # plain JSON). Bad shapes were already rejected as a 422 by the model.
+        updates["qualification_schema"] = body.qualification_schema.model_dump(mode="json")
     timezone = updates.pop("timezone", None)
 
     async with get_service_connection() as conn:

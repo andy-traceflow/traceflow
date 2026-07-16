@@ -17,11 +17,11 @@ import logging
 from enum import StrEnum
 from typing import Any
 
-import jinja2
-
 from app.config import get_settings
 from app.models.client_config import ClientConfig
+from app.models.contact import Contact
 from app.models.message import Message, MessageDirection
+from app.prompts.context import build_prompt_context
 from app.services.ai import get_anthropic_client
 
 logger = logging.getLogger(__name__)
@@ -41,8 +41,8 @@ class Intent(StrEnum):
     ambiguous = "ambiguous"
 
 
-INTENT_SYSTEM_V1 = """\
-You are triaging the FIRST text reply to a missed-call follow-up for {{business_name}}, a {{business_category}} business serving {{service_area}}. The person called, missed a connection, and just replied by SMS. Decide what they are so the conversation routes correctly.
+INTENT_INSTRUCTIONS_V1 = """\
+You are triaging the FIRST text reply to a missed-call follow-up for the business described above. The person called, missed a connection, and just replied by SMS. Decide what they are so the conversation routes correctly. If a caller block is present, use their history as a signal.
 
 Classify the reply into exactly one intent:
 - sales: a prospective customer interested in the service, a quote, pricing, scheduling, or describing work they want done. This is the default whenever the reply plausibly expresses interest.
@@ -57,7 +57,7 @@ Call the classify_intent tool with your decision. Do not write a reply to the cu
 """
 
 PROMPT_VERSIONS: dict[str, str] = {
-    "v1": INTENT_SYSTEM_V1,
+    "v1": INTENT_INSTRUCTIONS_V1,
 }
 
 CLASSIFY_TOOL: dict[str, Any] = {
@@ -84,6 +84,9 @@ CLASSIFY_TOOL: dict[str, Any] = {
 async def classify_intent(
     config: ClientConfig,
     history: list[Message],
+    *,
+    contact: Contact | None = None,
+    timezone: str = "America/Los_Angeles",
 ) -> Intent | None:
     """Classify the intent of the latest inbound reply.
 
@@ -103,13 +106,14 @@ async def classify_intent(
         return None
 
     version = config.prompt_versions.get("intent", DEFAULT_INTENT_VERSION)
-    system = _render_system(config, version)
+    instructions = PROMPT_VERSIONS.get(version, INTENT_INSTRUCTIONS_V1)
+    ctx = build_prompt_context(config, contact, timezone=timezone)
 
     try:
         response = await get_anthropic_client().messages.create(
             model=INTENT_MODEL,
             max_tokens=INTENT_MAX_TOKENS,
-            system=system,
+            system=ctx.system_blocks(instructions),
             messages=api_messages,
             tools=[CLASSIFY_TOOL],
             tool_choice={"type": "tool", "name": "classify_intent"},
@@ -148,24 +152,3 @@ def _to_api_messages(history: list[Message]) -> list[dict[str, str]]:
     while msgs and msgs[0]["role"] == "assistant":
         msgs.pop(0)
     return msgs
-
-
-def _render_system(config: ClientConfig, version: str) -> str:
-    """Render the intent system prompt for the given version."""
-    template_src = PROMPT_VERSIONS.get(version)
-    if template_src is None:
-        logger.warning(
-            "unknown intent prompt version — using default",
-            extra={"version": version},
-        )
-        template_src = PROMPT_VERSIONS[DEFAULT_INTENT_VERSION]
-    return jinja2.Template(template_src).render(
-        business_name=config.business_name or "our team",
-        business_category=config.category,
-        service_area=_service_area(config),
-    )
-
-
-def _service_area(config: ClientConfig) -> str:
-    zips = config.service_area_zips[:3]
-    return ", ".join(zips) if zips else "the local area"

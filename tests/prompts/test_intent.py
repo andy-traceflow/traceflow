@@ -60,38 +60,6 @@ def _fake_response(*blocks: Mock) -> Mock:
 
 
 # ---------------------------------------------------------------------------
-# System prompt rendering
-# ---------------------------------------------------------------------------
-
-def test_render_system_fills_business_context():
-    config = _make_config(
-        brand={
-            "business_name": "Acme Surfaces",
-            "category": "countertop",
-            "tone_of_voice": "warm",
-            "service_types": ["countertop", "flooring"],
-        },
-        service_area_zips=["89101"],
-    )
-    system = intent._render_system(config, "v1")
-    assert "Acme Surfaces" in system
-    assert "countertop" in system
-    assert "89101" in system
-    assert "classify_intent" in system  # tool instruction present
-
-
-def test_render_system_handles_empty_optionals():
-    system = intent._render_system(_make_config(), "v1")
-    assert "our team" in system        # business_name fallback
-    assert "the local area" in system  # service_area fallback
-
-
-def test_render_system_unknown_version_falls_back_to_default():
-    system = intent._render_system(_make_config(), "v999")
-    assert "classify_intent" in system
-
-
-# ---------------------------------------------------------------------------
 # Message-history mapping
 # ---------------------------------------------------------------------------
 

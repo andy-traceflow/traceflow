@@ -6,6 +6,104 @@
 
 ---
 
+## 2026-07-15 — Admin surface: contacts endpoints + config editors (Slice 5) + migrations applied to prod
+
+### ops: migrations 018–021 applied to prod Supabase (ienjxmyhttuzxoaeramo)
+Applied via the Supabase MCP (`apply_migration`, atomic) and recorded in the app's `public.schema_migrations` so `scripts/apply_migrations.py` stays consistent. Verified: `contacts` created with RLS **enabled + forced + tenant_isolation policy**; the backfill created 1 contact from the test-live-pilot client's 2 leads (same number) and **linked both** via `contact_id`; all new `leads`/`client_configs` columns present; the seeded `qualification_schema` landed on the existing config. Security advisors show **no new issues** — `contacts` is clean; every flagged item is pre-existing (`admin_users`/`audit_log`/`schema_migrations` intentional service-role tables, `set_updated_at` search_path). Prod head 017 → **021**.
+
+### build: admin config editors gain the new blocks, qualification_schema validated on write
+`ClientConfigAdminOut` / `ClientConfigUpdate` + `_CONFIG_SELECT` now carry `conversation_config`, `contact_config`, `qualification_schema`, `existing_customer_template`, `vendor_ack_template`. `qualification_schema` is typed as the full `QualificationSchema` on the update model, so a bad shape (e.g. an enum field with no options) is a **422 at request validation**, never a silently-stored broken schema; it's stored via `model_dump(mode="json")`.
+
+### build: admin contacts API (`routers/admin/contacts.py`)
+`GET /clients/{id}/contacts` (searchable phone/name, filterable by the six types, paginated), `GET /clients/{id}/contacts/{contact_id}` (contact + `known_facts` + `summary` + full lead history with completeness **and** value scores), and `PATCH …/{contact_id}` — the **only** path that writes `contact_type_source='manual'` and the only way to set `blocked`; goes through `set_contact_type` (precedence-safe, drops a `contact_type_changed` event) and is audit-logged. Registered on the admin router, so the gate-sweep (401) and cross-client-404 invariants cover it automatically.
+
+### build: demo fake-DB now serves contacts (dummy DB updated)
+`demo/fixtures.py` generates one contact per distinct lead phone (mirroring the 018 backfill), links each lead's `contact_id`, and derives the type from the lead's classification so the panel's New/Existing/Vendors/Filtered groups populate. `demo/fake_conn.py` routes the contacts list/detail/count queries to the fixtures. The read-only `/demo` now exercises the contacts endpoints (3 new demo tests green).
+
+### test: +18 tests; suite 521 passed / 43 skipped, ruff clean
+Contacts endpoint tests (list/filter/detail-with-scores/404/retype-manual/retype-blocked/bad-type-422), config qualification-schema validation (422 + accepted), and the demo contacts reads.
+
+### remaining (flagged): admin-ui React panels not built this slice
+The backend + demo are done and tested. The **`admin-ui/` React SPA panels** — the Contacts panel (grouped New/Existing/Vendors/Filtered), the Qualification field-list editor, and the leads-drawer "prior conversations" section — are a separate frontend effort (Vite build → `static/admin/assets/`) and are **not** built here. The API they consume is live-ready; a Render deploy (git push) is also pending and was not performed.
+
+---
+
+## 2026-07-15 — Unified prompt context + rolling summary (Slice 4)
+
+### build: one prompt context object, four blocks, all three prompts (`prompts/context.py`)
+`build_prompt_context` assembles `<business>` (name/category/services/area/hours/tone/terminology), `<caller>` (name/type/call_count/days-since/known_facts/summary/last_intent — **omitted entirely** for a first-time caller), `<state>` (captured/still-needed/turn N of max), and `<time>` (local time + is-business-hours, finally wiring `clients.timezone` — the vars greeting v1 dropped). `system_blocks()` emits the stable `<business>` block FIRST with `cache_control: ephemeral` — the Sonnet qualifier resends the system every turn, so caching it is a real cost line. Wired into the qualifier (v2 system is now content blocks; v1 kept as a legacy string), the intent classifier (now sees the caller block — triage knows a returning prospect), and summarize.
+
+### build: greeting variants selected by route + contact (`prompts/greeting.py`)
+`GREETING_NEUTRAL_V1` (first touch) and `GREETING_RETURNING_V1` (greet by name, ask same-project-or-new in one line — the caller block gives the AI the history). Selection requires a known name AND `recognize_returning_callers` AND a returning signal (`is_returning` or a CRM link) — **never guesses a name** (null name → neutral). Existing-customer and vendor routes get distinct static acks (`render_customer_ack` / `render_vendor_ack`) from `existing_customer_template` / `vendor_ack_template` (migration 021, both nullable → sensible defaults) — a service acknowledgment, no sales qualification, no AI.
+
+### build: rolling conversation summary on terminal transition (`prompts/summarize.py`)
+On a qualifier terminal transition, one Haiku call distills the conversation into a durable one-line `contacts.summary` + person-scoped facts; `persist_summary` writes the summary, merges the facts into `known_facts`, and promotes an untyped contact to prospect. Bills one AI interaction; failure is non-fatal (log, skip). This is what makes the returning-caller greeting/context meaningful next time.
+
+### chore + test: demo fixtures updated; +~40 tests; suite 508 passed / 43 skipped, ruff clean
+New `tests/prompts/test_context.py` (block rendering, first-time-caller omission, cache_control on the business block, time/hours), `tests/prompts/test_summarize.py`, and golden-conversation fixtures in `tests/fixtures/conversations/` (qualified, out-of-area gate, max-turns, returning-with-facts) with a deterministic loader. `test_greeting.py`/`test_intent.py`/`test_qualifier.py` updated for the context-block system. Migration head 020 → 021; not applied to any DB from this session.
+
+### known gap
+Summarize runs on the **qualifier-path** terminals (qualified/needs_review/disqualified). The **intent-gate** terminals (existing-customer→support_touch, non_lead, spam) don't yet summarize — a minor follow-up; summarizing spam/non-lead noise has little value, existing-customer touches are the only real candidate.
+
+---
+
+## 2026-07-15 — Config-driven qualification schema (Slice 3)
+
+### build: qualification field set moves from code into config (migration 020)
+`client_configs.qualification_schema` (JSONB, seeded with the surface-contractor default) replaces the hardcoded field list + literal tool schema in `prompts/qualifier.py`. Each field declares type/scope/weight/`ask`/`depends_on`/`maps_to` etc. (`app/models/qualification.py`, `extra="forbid"`, validated: `maps_to` ∈ real leads columns, enum `options` must satisfy the DB CHECK for budget_range/timeframe, unique keys, `depends_on` references a real key). Adds `leads.qualification_data` (non-canonical captured fields) + `leads.value_score`, and a new terminal status `disqualified`. `qualification_score` is **repurposed** as the completeness score (it was never written before); `value_score` is a separate deterministic estimate — the two are **never blended** (a fully-captured $700 backsplash is 100% complete, near-zero value). The free-text `qualification_prompt` is marked DEPRECATED (unread; dropped later). `project_stage` — the highest-signal-per-question field — is in the default seed.
+
+### build: deterministic loop control — the model no longer decides "done" (`services/qualification.py`)
+`merge_state` (canonical columns + qualification_data + person-scoped known_facts, lead-wins), `applicable_fields` (resolves `depends_on` — material is hidden until service_type is a countertop/flooring/tile), `missing_required` (weight-sorted), `check_hard_gates` (service-area zip + `disqualify_if` → a hard disqualification, not a score input), `completeness_score`, `value_score` (deterministic: size/budget/timeframe/property + vip threshold), `should_terminate` (qualified at `min_score_to_qualify`, needs_review at `max_turns`), and `split_extracted` (routes each extraction to a leads column / qualification_data / known_facts). The webhook (`_process_sms_reply`) now runs this loop: build state → qualifier turn → split & apply → score → gate → terminate; **code owns qualification_status**, and CRM push fires when code marks the lead qualified.
+
+### build: qualifier prompt v2 — dynamic tool + state injection (`prompts/qualifier.py`)
+`build_update_lead_tool(schema)` generates the Anthropic tool `input_schema` from the client schema at runtime (enums from field options; `qualification_status` removed). The v2 system prompt receives the already-known state, the computed missing-fields list (the model may only ask for those), and the turn budget ("turn 3 of at most 8"). `PROMPT_VERSIONS` keeps v1 for pinned clients; default is now v2. Person-scoped extractions merge into `contacts.known_facts` via the now-implemented schema-aware `merge_person_facts` (the Slice-1 deferral, resolved).
+
+### build: dotted-path field mappings — non-canonical fields reach the CRM (Layer 2)
+A `client_field_mappings.canonical_field` may now be a dotted path (`qualification_data.material`). `services/field_mappings.dotted_qualification_data` flattens a lead's qualification_data into dotted keys, and all three adapters' canonical-value builders spread it in — so a client can map a client-specific field to a CRM custom field, while an unmapped qualification_data field is simply never pushed. Small (~40 lines), so included here rather than deferred.
+
+### chore + test: demo fake-DB updated; +45 tests; suite 490 passed / 43 skipped, ruff clean
+`demo/fixtures.py` leads carry `qualification_data`/`value_score`; configs carry `qualification_schema` (empty → runtime default). New `tests/services/test_qualification.py` (schema validation, scoring, gates, termination, split) and rewritten `tests/prompts/test_qualifier.py` (dynamic tool gen, missing-fields injection, model can't ask off-list); `merge_person_facts` + dotted-path adapter tests added. Migration head 019 → 020; not applied to any DB from this session.
+
+---
+
+## 2026-07-15 — Conversation state + returning-caller routing + source-of-truth resolver (Slices 2 + 2.5)
+
+### build: `classify_caller` reworked over contacts — one tree, time-bounded (migration 019)
+Rebuilt the pre-send routing tree on top of the durable contacts identity. New order: no-phone → resolve contact → blocked/spam drop → vendor allowlist → **cached** customer/vendor (skips CRM + spam lookups — the repeat-known-caller cost win) → open lead (`active_conversation` if fresh, **`resumed_conversation`** if older than `resume_window_hours`, default 336h) → type resolution → spam scoring (unknown only, never a prospect) → **`returning_contact`** (prospect whose leads are all terminal, last seen within `reopen_window_days`) → default `potential_lead` with unknown→prospect promotion. `Route` gains `resumed_conversation`/`returning_contact`; `ClassificationResult` gains `contact: Contact` + `is_returning`. `leads` gets `last_inbound_at`/`last_outbound_at`/`turn_count` (backfilled from `messages`); `client_configs` gets `conversation_config`. Fixes the two routing bugs: a stale-open lead no longer holds a caller in `active_conversation` forever, and a returning caller now arrives with context instead of a blank re-ask.
+
+### build: contact source-of-truth resolver — config-driven, no second code path (Slice 2.5)
+`client_configs.contact_config` (`source_of_truth` auto|crm|traceflow, `crm_write_back_contact_type` off, `contact_type_cache_days` 30). `services/contacts.resolve_contact_type` is the ONE place mode is decided: `auto` → `crm` when the provider has a registered adapter **and** credentials, else `traceflow` (a CRM with no adapter, e.g. ServiceTitan, lands on `traceflow` with no special casing). crm mode is cache-first (a fresh crm-typed contact needs no network call) and degrades to the local row on any lookup miss/failure — never a drop. traceflow mode reads the local contacts row as authority. The `contacts` table is the cache in one mode and the ledger in the other; nothing else branches on mode. **Write-back is off by default and manual-only**: `maybe_write_back_contact_type` refuses unless the flag is on AND the type is a human decision — TraceFlow never pushes an inferred type into a client's CRM. Bundled with Slice 2 because the tree calls this resolver and the design forbids the inline `if crm_provider:` branch a standalone Slice 2 would need (migration numbering confirms it: 019 covers both, 020 is Slice 3).
+
+### fix: inbound SMS with no open lead is no longer silently dropped
+`_process_sms_reply` now resolves the contact first, drops blocked/spam contacts with no reply, and — when there's no open lead — **opens a new lead linked to the contact, seeded with known facts**, then qualifies. This closes the cold-inbound-SMS gap (a person who texts without calling first is a real lead) and the qualified-lead-follow-up gap. Every message advances `last_inbound_at`/`last_outbound_at`/`turn_count`. `_process_missed_call` handles the new routes (reuses the lead on resume — no duplicate CRM record; seeds facts on a returning contact; bumps `contacts.call_count`).
+
+### build: `scripts/export_contacts.py` — off-boarding / backup / CRM-migration CSV (Slice 2.5)
+One CSV row per lead (lead-less contacts still emit a row), with contact identity, `known_facts`, and the SMS transcript inlined. Serves the Appendix C contractual export, the traceflow→crm migration path, and backup verification.
+
+### chore: demo fake-DB kept schema-consistent
+`src/app/demo/fixtures.py` leads carry `contact_id`/`last_inbound_at`/`last_outbound_at`/`turn_count`; configs carry `conversation_config`/`contact_config`. The `/demo` admin surface is read-only and unaffected by the routing changes; the contacts *panel* + contacts fixtures land in Slice 5.
+
+### test: +~55 tests; full suite 463 passed / 43 skipped, ruff clean
+Rewrote `tests/services/test_classification.py` (the full routing matrix over contact state) and `tests/test_twilio.py` (resumed-conversation, returning-contact-seeds-facts, cold-inbound-opens-lead, blocked-drop, call_count bump). Added `tests/services/test_contact_resolver.py` (auto/crm/traceflow resolution, cache hit/expiry, degrade-on-miss, write-back guards) and `tests/scripts/test_export_contacts.py`. No new tenant tables this slice (`contacts` was added in Slice 1). Migration head 018 → 019; not applied to any DB from this session.
+
+---
+
+## 2026-07-15 — Contact identity (Slice 1 of contact/memory/config-qualification work)
+
+### build: `contacts` table — durable caller identity above the lead (migration 018)
+Phone lived only on `leads`, so caller memory died with the lead. Added a `contacts` table — one row per `(client_id, phone)`, `leads.contact_id` links up to it — carrying ONE vocabulary for "what is this caller" (`contact_type`: `unknown`/`prospect`/`customer`/`vendor`/`spam`/`blocked`) with provenance (`contact_type_source`: `manual`/`crm`/`inferred`) and a rolling `known_facts` JSONB scoped to PERSON facts only (name/address/zip/preferred contact time — project fields die with the lead). RLS enabled + FORCED + NULL-safe `tenant_isolation` policy, matching every tenant-scoped table (migrations 010/011). Migration **backfills** one contact per distinct `(client_id, phone)` from existing leads (name = most recent non-null `contact_name`, `contact_type` derived from the latest lead's `classification`, source `inferred`) and links every lead — so the table is populated, typed, and linked on ship. **Behavior-neutral on its own:** no runtime code reads `contacts` yet (that wiring is Slice 2). Migration head 017 → 018.
+
+### build: contact-type precedence rule enforced in ONE place (`services/contacts.py`)
+`set_contact_type` is the sole writer of `contact_type` and enforces `manual > crm > inferred`: an `inferred` write never clobbers `crm`/`manual`, a `crm` write never clobbers `manual`, and `blocked` is settable only with `source='manual'` (a non-manual `blocked` write raises; everything else disallowed by precedence is a silent, logged no-op). Every applied type CHANGE drops a `contact_type_changed` event; an equal-source re-confirmation of the same type refreshes `contact_type_at` (the CRM cache TTL) without an event. Also added `resolve_contact` (get-or-create via `INSERT … ON CONFLICT DO UPDATE`, idempotent under concurrent webhooks), `contact_history`, and `merge_known_facts` (the person-scoped writer; the schema-aware `merge_person_facts(…, schema)` is deferred to Slice 3, which introduces `QualField.scope`).
+
+### build: dependency-free phone normalization (`services/phone.py`)
+`normalize(raw, default_region) -> str | None` returns E.164 (NANP-aware, `default_region` from `ClientConfig.default_phone_region`, not a constant). Twilio's `From` is already E.164 and the ICP is US/CA, so a full locale library would be dead weight. Normalized BOTH sides of the one in-code phone comparison — the `vendor_allowlist` membership test in `classification.py` — with a raw-value fallback so it can never drop a match the old raw compare would have made (zero behavior change for well-formed E.164, a fix for hand-entered formatting).
+
+### test: +45 offline tests; `contacts` added to the tenant-isolation invariant (14 tables)
+`tests/services/test_phone.py` and `tests/services/test_contacts.py` (get-or-create/upsert shape, full precedence matrix, blocked-manual-only, person-fact filtering, CRM-type mapping). `contacts` added to the parametrized RLS table list in `tests/test_tenant_isolation.py` (13 → 14) plus a direct cross-tenant isolation test. Offline suite **438 passed / 43 skipped**, ruff clean. The live-DB portion (apply 018, run isolation with `contacts` included) runs in CI — not applied to any DB from this session.
+
+---
+
 ## 2026-07-13 — LLR verified end-to-end live in prod (first real SMS conversation)
 
 ### milestone: full missed-call → AI qualifier flow confirmed on a real phone

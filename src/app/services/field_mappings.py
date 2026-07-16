@@ -55,6 +55,20 @@ async def resolve_mappings(
     }
 
 
+def dotted_qualification_data(lead: Any) -> dict[str, Any]:
+    """Flatten lead.qualification_data into dotted canonical keys so a client can
+    map a non-canonical qualification field to a CRM custom field.
+
+    e.g. {'material': 'quartz'} → {'qualification_data.material': 'quartz'}. A
+    client_field_mappings row whose canonical_field is 'qualification_data.material'
+    then resolves against these entries via the adapter's normal value lookup; an
+    unmapped qualification_data field is simply never pushed. Returns {} when the
+    lead has no qualification_data.
+    """
+    data = getattr(lead, "qualification_data", None) or {}
+    return {f"qualification_data.{key}": value for key, value in data.items()}
+
+
 def apply_transform(value: Any, transform: dict[str, Any] | None) -> Any:
     """Apply a value transformation to a single field value.
 

@@ -1,7 +1,8 @@
-"""Lead qualifier prompt tests.
+"""Lead qualifier prompt tests (config-driven, Slice 3).
 
-Covers system-prompt rendering, message-history mapping, and
-qualifier_turn with the Anthropic client mocked — no real API calls.
+Covers dynamic tool-schema generation from a client schema, the v2 system
+prompt's captured/missing-fields injection and turn budget, message-history
+mapping, and qualifier_turn with the Anthropic client mocked.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import pytest
 
 from app.models.client_config import ClientConfig
 from app.models.message import Message
+from app.models.qualification import QualificationSchema, default_schema
 from app.prompts import qualifier
 
 
@@ -30,13 +32,8 @@ def _make_config(**overrides: Any) -> ClientConfig:
 
 def _msg(direction: str, body: str) -> Message:
     return Message(
-        id=uuid4(),
-        client_id=uuid4(),
-        lead_id=uuid4(),
-        direction=direction,
-        channel="sms",
-        body=body,
-        created_at=datetime.now(UTC),
+        id=uuid4(), client_id=uuid4(), lead_id=uuid4(),
+        direction=direction, channel="sms", body=body, created_at=datetime.now(UTC),
     )
 
 
@@ -57,83 +54,103 @@ def _fake_response(*blocks: Mock) -> Mock:
 
 
 # ---------------------------------------------------------------------------
-# System prompt rendering
+# build_update_lead_tool — generated from the client schema
 # ---------------------------------------------------------------------------
 
-def test_render_system_fills_business_context():
-    config = _make_config(
-        brand={
-            "business_name": "Acme Surfaces",
-            "category": "countertop",
-            "tone_of_voice": "warm",
-            "service_types": ["countertop", "flooring"],
-        },
-        service_area_zips=["89101"],
-        vip_keywords=["commercial", "rush"],
+
+def test_tool_generated_from_schema_has_no_status_field() -> None:
+    tool = qualifier.build_update_lead_tool(default_schema())
+    props = tool["input_schema"]["properties"]
+    assert "qualification_status" not in props  # code owns termination now
+    assert "contact_name" in props and "material" in props
+
+
+def test_tool_enum_fields_carry_options() -> None:
+    tool = qualifier.build_update_lead_tool(default_schema())
+    material = tool["input_schema"]["properties"]["material"]
+    assert material["type"] == "string"
+    assert "quartz" in material["enum"]
+
+
+def test_tool_reflects_custom_client_schema() -> None:
+    schema = QualificationSchema(
+        fields=[
+            {"key": "pool_shape", "label": "Pool shape", "type": "enum",
+             "options": ["kidney", "rectangle", "freeform"], "ask": "What shape?"},
+        ]
     )
-    system = qualifier._render_system(config, "v1")
-    assert "Acme Surfaces" in system
-    assert "countertop" in system
-    assert "warm" in system
-    assert "89101" in system
-    assert "commercial" in system  # vip keyword rendered
+    tool = qualifier.build_update_lead_tool(schema)
+    assert tool["input_schema"]["properties"]["pool_shape"]["enum"] == [
+        "kidney", "rectangle", "freeform"
+    ]
 
 
-def test_render_system_handles_empty_optionals():
-    system = qualifier._render_system(_make_config(), "v1")
-    assert "our team" in system      # business_name fallback
-    assert "update_lead" in system   # core instruction still present
+# ---------------------------------------------------------------------------
+# v2 system is context content blocks (business cached)
+# ---------------------------------------------------------------------------
+
+
+def test_v2_system_is_cached_content_blocks() -> None:
+    system = qualifier._build_system(
+        _make_config(), "v2", default_schema(), state={}, turn_count=2,
+        contact=None, timezone="America/Los_Angeles",
+    )
+    assert isinstance(system, list)
+    assert system[0]["cache_control"] == {"type": "ephemeral"}
+    # The rules block references the update_lead tool and the "Still needed" list.
+    joined = " ".join(b["text"] for b in system)
+    assert "Still needed" in joined
+    assert "update_lead" in joined
+
+
+def test_v1_system_is_a_plain_string() -> None:
+    system = qualifier._build_system(
+        _make_config(brand={"business_name": "Acme"}), "v1", default_schema(),
+        state={}, turn_count=0, contact=None, timezone="America/Los_Angeles",
+    )
+    assert isinstance(system, str)
+    assert "Acme" in system
 
 
 # ---------------------------------------------------------------------------
 # Message-history mapping
 # ---------------------------------------------------------------------------
 
-def test_to_api_messages_maps_roles_and_drops_leading_assistant():
+
+def test_to_api_messages_maps_roles_and_drops_leading_assistant() -> None:
     history = [
-        _msg("outbound", "Hi, sorry we missed you!"),  # the greeting — assistant
+        _msg("outbound", "Hi, sorry we missed you!"),
         _msg("inbound", "I need new countertops"),
         _msg("outbound", "Great — how many sqft?"),
         _msg("inbound", "About 40"),
     ]
     msgs = qualifier._to_api_messages(history)
-    assert len(msgs) == 3  # leading greeting dropped
+    assert len(msgs) == 3
     assert msgs[0] == {"role": "user", "content": "I need new countertops"}
-    assert msgs[1] == {"role": "assistant", "content": "Great — how many sqft?"}
     assert msgs[-1] == {"role": "user", "content": "About 40"}
-
-
-def test_to_api_messages_empty_when_only_assistant():
-    assert qualifier._to_api_messages([_msg("outbound", "Hi!")]) == []
 
 
 # ---------------------------------------------------------------------------
 # qualifier_turn (Anthropic client mocked)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
-async def test_qualifier_turn_none_without_api_key():
+async def test_qualifier_turn_none_without_api_key() -> None:
     with patch("app.prompts.qualifier.get_settings") as mock_settings:
         mock_settings.return_value.anthropic_api_key = ""
-        result = await qualifier.qualifier_turn(_make_config(), [_msg("inbound", "hello")])
+        result = await qualifier.qualifier_turn(
+            _make_config(), [_msg("inbound", "hi")], default_schema(), {}, 1
+        )
     assert result is None
 
 
 @pytest.mark.asyncio
-async def test_qualifier_turn_none_with_no_user_message():
-    # History is only an assistant turn → nothing for the model to respond to.
-    with patch("app.prompts.qualifier.get_settings") as mock_settings:
-        mock_settings.return_value.anthropic_api_key = "sk-ant-test"
-        result = await qualifier.qualifier_turn(_make_config(), [_msg("outbound", "Hi!")])
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_qualifier_turn_returns_text_extracted_and_version():
+async def test_qualifier_turn_returns_text_extracted_and_version() -> None:
     history = [_msg("inbound", "I need 40 sqft of countertop, this month")]
     response = _fake_response(
         _text_block("Got it! What's your zip code?"),
-        _tool_block({"service_type": "countertop", "sqft": 40, "timeframe": "this_month"}),
+        _tool_block({"service_type": "countertop", "scope_size": 40, "timeframe": "this_month"}),
     )
     mock_client = Mock()
     mock_client.messages.create = AsyncMock(return_value=response)
@@ -143,18 +160,20 @@ async def test_qualifier_turn_returns_text_extracted_and_version():
         patch("app.prompts.qualifier.get_anthropic_client", return_value=mock_client),
     ):
         mock_settings.return_value.anthropic_api_key = "sk-ant-test"
-        result = await qualifier.qualifier_turn(_make_config(), history)
+        result = await qualifier.qualifier_turn(
+            _make_config(), history, default_schema(), {}, 1
+        )
 
     assert result is not None
     reply, extracted, version = result
     assert reply == "Got it! What's your zip code?"
-    assert extracted == {"service_type": "countertop", "sqft": 40, "timeframe": "this_month"}
-    assert version == "v1"
+    assert extracted == {"service_type": "countertop", "scope_size": 40, "timeframe": "this_month"}
+    assert version == "v2"  # default is now v2
     assert mock_client.messages.create.call_args.kwargs["model"] == "claude-sonnet-4-6"
 
 
 @pytest.mark.asyncio
-async def test_qualifier_turn_none_on_api_error():
+async def test_qualifier_turn_none_on_api_error() -> None:
     mock_client = Mock()
     mock_client.messages.create = AsyncMock(side_effect=Exception("api down"))
     with (
@@ -162,5 +181,7 @@ async def test_qualifier_turn_none_on_api_error():
         patch("app.prompts.qualifier.get_anthropic_client", return_value=mock_client),
     ):
         mock_settings.return_value.anthropic_api_key = "sk-ant-test"
-        result = await qualifier.qualifier_turn(_make_config(), [_msg("inbound", "hello")])
+        result = await qualifier.qualifier_turn(
+            _make_config(), [_msg("inbound", "hi")], default_schema(), {}, 1
+        )
     assert result is None

@@ -24,6 +24,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 from app.models.lead import LeadOutcome, OutcomeSource
+from app.models.qualification import QualificationSchema
 
 # ===========================================================================
 # Auth
@@ -110,6 +111,12 @@ class ClientConfigAdminOut(BaseModel):
     existing_customer_alert_contact: str | None
     vendor_allowlist: list[str]
     revenue_config: dict[str, Any]
+    # Returning-caller + resolver + qualification config (Slices 2–3)
+    conversation_config: dict[str, Any]
+    contact_config: dict[str, Any]
+    qualification_schema: dict[str, Any]
+    existing_customer_template: str | None
+    vendor_ack_template: str | None
     # secrets, redacted to presence/keys
     has_crm_credentials: bool
     webhook_integrations: list[str]
@@ -147,6 +154,13 @@ class ClientConfigUpdate(BaseModel):
     existing_customer_alert_contact: str | None = None
     vendor_allowlist: list[str] | None = None
     revenue_config: dict[str, Any] | None = None
+    conversation_config: dict[str, Any] | None = None
+    contact_config: dict[str, Any] | None = None
+    # Validated through the full model on write → a bad shape is a 422, not a
+    # silently-stored broken schema.
+    qualification_schema: QualificationSchema | None = None
+    existing_customer_template: str | None = None
+    vendor_ack_template: str | None = None
 
 
 # ===========================================================================
@@ -294,3 +308,67 @@ class AIUsageOut(BaseModel):
     remaining: int
     percent_used: float
     resets_at: datetime
+
+
+# ===========================================================================
+# Contacts (Slice 5)
+# ===========================================================================
+
+
+class ContactListItem(BaseModel):
+    id: UUID
+    phone: str
+    name: str | None
+    contact_type: str  # unknown | prospect | customer | vendor | spam | blocked
+    contact_type_source: str  # manual | crm | inferred
+    call_count: int
+    lead_count: int
+    last_seen_at: datetime
+    summary: str | None
+
+
+class ContactListOut(BaseModel):
+    data: list[ContactListItem]
+    count: int
+
+
+class ContactLeadItem(BaseModel):
+    id: UUID
+    created_at: datetime
+    qualification_status: str
+    classification: str
+    service_type: str | None
+    qualification_score: int | None  # completeness
+    value_score: int | None
+    outcome: str
+    recovered_value: float | None
+
+
+class ContactDetailOut(BaseModel):
+    id: UUID
+    client_id: UUID
+    phone: str
+    name: str | None
+    contact_type: str
+    contact_type_source: str
+    contact_type_at: datetime | None
+    contact_type_reason: str | None
+    crm_external_id: str | None
+    known_facts: dict[str, Any]
+    summary: str | None
+    last_intent: str | None
+    call_count: int
+    lead_count: int
+    first_seen_at: datetime
+    last_seen_at: datetime
+    leads: list[ContactLeadItem]
+
+
+class ContactRetypeIn(BaseModel):
+    """The ONLY path that writes contact_type_source='manual' (and the only way
+    to set 'blocked'). extra='forbid' so a typo is a 422."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    contact_type: Literal["unknown", "prospect", "customer", "vendor", "spam", "blocked"]
+    reason: str | None = None

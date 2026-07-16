@@ -1,0 +1,15 @@
+{
+  "name": "qualified — all required fields captured, in area",
+  "service_area_zips": ["89101"],
+  "state": {
+    "contact_name": "Al",
+    "address": "89101",
+    "service_type": "countertop",
+    "material": "quartz",
+    "sqft": 40,
+    "timeframe": "asap",
+    "project_stage": "pricing"
+  },
+  "turn_count": 5,
+  "expect": {"gate": null, "termination": "qualified"}
+}
