@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type ClassificationConfig, type ClientConfig } from "../api";
+import {
+  api,
+  isDemo,
+  type ClassificationConfig,
+  type ClientConfig,
+  type ContactConfig,
+  type ConversationConfig,
+  type QualificationSchema,
+} from "../api";
 import { CLIENT_STATUS_LABELS, CLIENT_TIER_LABELS, SPAM_RISK_LABELS, labelFor } from "../labels";
+import QualificationEditor from "./QualificationEditor";
 
 /** Editable subset — mirrors ClientConfigUpdate. Only drafted keys are sent. */
 type Draft = Partial<{
@@ -8,6 +17,8 @@ type Draft = Partial<{
   twilio_number: string | null;
   greeting_template: string | null;
   qualification_prompt: string | null;
+  existing_customer_template: string | null;
+  vendor_ack_template: string | null;
   vip_keywords: string[];
   vip_value_threshold: number | null;
   service_area_zips: string[];
@@ -16,6 +27,9 @@ type Draft = Partial<{
   owner_alert_emails: string[];
   owner_alert_phones: string[];
   classification_config: ClassificationConfig;
+  conversation_config: ConversationConfig;
+  contact_config: ContactConfig;
+  qualification_schema: QualificationSchema;
   existing_customer_alert_contact: string | null;
   vendor_allowlist: string[];
 }>;
@@ -72,6 +86,16 @@ export default function ConfigPanel({ clientId }: { clientId: string }) {
   const setCls = (patch: Partial<ClassificationConfig>) =>
     set("classification_config", { ...cls, ...patch });
 
+  const conv: ConversationConfig = draft.conversation_config ?? config.conversation_config;
+  const setConv = (patch: Partial<ConversationConfig>) =>
+    set("conversation_config", { ...conv, ...patch });
+
+  const contact: ContactConfig = draft.contact_config ?? config.contact_config;
+  const setContact = (patch: Partial<ContactConfig>) =>
+    set("contact_config", { ...contact, ...patch });
+
+  const schema: QualificationSchema = draft.qualification_schema ?? config.qualification_schema;
+
   const dirty = Object.keys(draft).length > 0;
 
   async function save() {
@@ -124,14 +148,102 @@ export default function ConfigPanel({ clientId }: { clientId: string }) {
             className="w-full rounded border border-border bg-surface px-3 py-2.5 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           />
         </Field>
-        <Field label="Qualifier prompt override" hint="blank = platform default prompt">
+        <Field label="Qualifier prompt override" hint="DEPRECATED — superseded by the qualification schema below; unread">
           <textarea
-            rows={5}
+            rows={3}
             value={(val("qualification_prompt") as string | null) ?? ""}
             onChange={(e) => set("qualification_prompt", e.target.value || null)}
             className="w-full rounded border border-border bg-surface px-3 py-2.5 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
           />
         </Field>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Existing-customer ack" hint="service ack for a known customer at voicemail; blank = default. Use {business_name}">
+            <textarea
+              rows={2}
+              value={(val("existing_customer_template") as string | null) ?? ""}
+              onChange={(e) => set("existing_customer_template", e.target.value || null)}
+              className="w-full rounded border border-border bg-surface px-3 py-2.5 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+            />
+          </Field>
+          <Field label="Vendor ack" hint="minimal ack for an allowlisted vendor; blank = default. Use {business_name}">
+            <textarea
+              rows={2}
+              value={(val("vendor_ack_template") as string | null) ?? ""}
+              onChange={(e) => set("vendor_ack_template", e.target.value || null)}
+              className="w-full rounded border border-border bg-surface px-3 py-2.5 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+            />
+          </Field>
+        </div>
+      </Section>
+
+      <Section title="Returning callers">
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Toggle
+            label="Recognize returning callers"
+            hint="greet a known caller by name and ask same-project-or-new"
+            checked={conv.recognize_returning_callers}
+            onChange={(v) => setConv({ recognize_returning_callers: v })}
+          />
+          <Toggle
+            label="Reuse lead on resume"
+            hint="a stale-open conversation reuses its lead — no duplicate CRM record"
+            checked={conv.reuse_lead_on_resume}
+            onChange={(v) => setConv({ reuse_lead_on_resume: v })}
+          />
+        </div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <Field label="Resume window (hours)" hint="an open lead older than this resumes instead of counting as active">
+            <Input
+              type="number"
+              value={String(conv.resume_window_hours)}
+              onChange={(v) => setConv({ resume_window_hours: Number(v) })}
+            />
+          </Field>
+          <Field label="Reopen window (days)" hint="a terminal lead newer than this lets a returning caller reopen with context">
+            <Input
+              type="number"
+              value={String(conv.reopen_window_days)}
+              onChange={(v) => setConv({ reopen_window_days: Number(v) })}
+            />
+          </Field>
+        </div>
+      </Section>
+
+      <Section title="Contact source of truth">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Field label="Source of truth" hint="auto → CRM when a working adapter exists, else TraceFlow">
+            <select
+              value={contact.source_of_truth}
+              onChange={(e) => setContact({ source_of_truth: e.target.value as ContactConfig["source_of_truth"] })}
+              className="w-full rounded border border-border bg-surface px-3 py-2.5 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+            >
+              <option value="auto">auto</option>
+              <option value="crm">crm</option>
+              <option value="traceflow">traceflow</option>
+            </select>
+          </Field>
+          <Field label="Contact-type cache (days)" hint="a fresh CRM-typed caller skips the CRM + spam lookups">
+            <Input
+              type="number"
+              value={String(contact.contact_type_cache_days)}
+              onChange={(v) => setContact({ contact_type_cache_days: Number(v) })}
+            />
+          </Field>
+          <Toggle
+            label="CRM write-back"
+            hint="push manual type changes back to the CRM (off by default; manual-only)"
+            checked={contact.crm_write_back_contact_type}
+            onChange={(v) => setContact({ crm_write_back_contact_type: v })}
+          />
+        </div>
+      </Section>
+
+      <Section title="Qualification schema">
+        <QualificationEditor
+          schema={schema}
+          readOnly={isDemo}
+          onChange={(s) => set("qualification_schema", s)}
+        />
       </Section>
 
       <Section title="Caller classification">
@@ -307,5 +419,32 @@ function Input({
       onChange={(e) => onChange(e.target.value)}
       className="w-full rounded border border-border bg-surface px-3 py-2.5 text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
     />
+  );
+}
+
+function Toggle({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-start gap-2 rounded border border-border bg-surface/60 px-3 py-2">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-0.5 accent-signal"
+      />
+      <span>
+        <span className="block text-sm text-zinc-200">{label}</span>
+        <span className="block text-xs text-zinc-400">{hint}</span>
+      </span>
+    </label>
   );
 }

@@ -127,6 +127,49 @@ export interface ClassificationConfig {
   drop_spam_silently: boolean;
 }
 
+/** Returning-caller conversation windows (migration 019). */
+export interface ConversationConfig {
+  resume_window_hours: number;
+  reopen_window_days: number;
+  recognize_returning_callers: boolean;
+  reuse_lead_on_resume: boolean;
+}
+
+/** Contact source-of-truth resolver config (migration 019, Slice 2.5). */
+export interface ContactConfig {
+  source_of_truth: "auto" | "crm" | "traceflow";
+  crm_write_back_contact_type: boolean;
+  contact_type_cache_days: number;
+}
+
+export type FieldScope = "person" | "project";
+export type QualFieldType = "string" | "number" | "enum" | "boolean";
+
+/** One configurable qualification field (mirrors models/qualification.QualField). */
+export interface QualField {
+  key: string;
+  label: string;
+  type: QualFieldType;
+  options?: string[] | null;
+  unit?: string | null;
+  scope: FieldScope;
+  required: boolean;
+  weight: number;
+  ask: string;
+  depends_on?: Record<string, string[]> | null;
+  disqualify_if?: Record<string, unknown> | null;
+  hard_gate?: "service_area" | null;
+  maps_to?: string | null;
+}
+
+export interface QualificationSchema {
+  fields: QualField[];
+  min_score_to_qualify: number;
+  max_turns: number;
+  max_questions_per_message: number;
+  ask_budget: boolean;
+}
+
 export interface ClientConfig {
   client_id: string;
   slug: string;
@@ -152,6 +195,11 @@ export interface ClientConfig {
   existing_customer_alert_contact: string | null;
   vendor_allowlist: string[];
   revenue_config: Record<string, unknown>;
+  conversation_config: ConversationConfig;
+  contact_config: ContactConfig;
+  qualification_schema: QualificationSchema;
+  existing_customer_template: string | null;
+  vendor_ack_template: string | null;
   has_crm_credentials: boolean;
   webhook_integrations: string[];
   updated_at: string;

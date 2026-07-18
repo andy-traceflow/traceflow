@@ -17,6 +17,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from app.models.qualification import DEFAULT_QUALIFICATION_SCHEMA_DICT
+
 NOW = datetime.now(UTC)
 
 # Stable identity for the demo session (see routers/demo.py + admin_auth.py).
@@ -331,9 +333,9 @@ def _config_row(slug: str, name: str, tier: str, status: str, crm: str | None,
             "crm_write_back_contact_type": False,
             "contact_type_cache_days": 30,
         },
-        # Empty → services.qualification.get_schema falls back to the default
-        # seed. The schema editor (admin) lands in Slice 5.
-        "qualification_schema": {},
+        # The seeded default schema (mirrors the prod column default) so the
+        # admin qualification editor has real fields to render.
+        "qualification_schema": DEFAULT_QUALIFICATION_SCHEMA_DICT,
         "updated_at": NOW - timedelta(days=2),
     }
 
