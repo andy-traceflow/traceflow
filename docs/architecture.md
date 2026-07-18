@@ -154,7 +154,7 @@ Three details that matter:
 
 `tests/test_tenant_isolation.py` runs against the live database in CI (and locally with `TRACEFLOW_TEST_DB_URL` set):
 
-- 13 tenant-scoped tables parametrized: every one must have RLS enabled AND a policy
+- 14 tenant-scoped tables parametrized (adds `contacts`, ADR-0005): every one must have RLS enabled AND a policy
 - Direct cross-tenant isolation tests for `leads`, `kb_entries`, `messages`, `events` — insert as A, switch to B, assert zero rows
 - "No tenant context → deny all reads" — the empty-string defense path
 - Test bodies `SET ROLE authenticated` to actually exercise RLS (mirrors production code path)
@@ -449,6 +449,29 @@ alter table kb_chunks enable row level security;
 
 -- (Policies created per table; see Multi-tenancy section above)
 ```
+
+### Contact identity + config-driven qualification (migrations 018–021, ADR-0005)
+
+A durable **`contacts`** table sits above `leads` — one row per `(client_id,
+phone)`, `leads.contact_id` links up to it — carrying ONE vocabulary for "what
+is this caller" (`contact_type`) with provenance (`contact_type_source`) and a
+precedence rule enforced in one place (`manual > crm > inferred`; `blocked` is
+manual-only). Where the authoritative answer lives is config, resolved at
+runtime by `services/contacts.resolve_contact_type`
+(`contact_config.source_of_truth` = `auto`|`crm`|`traceflow`) — the same
+config-resolved-provenance pattern as `revenue_config.mode` (ADR-0003). There is
+no separate no-CRM code path; the `contacts` table is the CRM cache in one mode
+and the local ledger in the other.
+
+New per-tenant config columns on `client_configs` (all JSONB with materialized
+defaults, mirrored by accessors on `ClientConfig`): `conversation_config`
+(returning-caller resume/reopen windows), `contact_config` (the resolver),
+`qualification_schema` (the field set the qualifier collects — code owns
+termination; `qualification_prompt` is deprecated), plus `existing_customer_
+template` / `vendor_ack_template`. `leads` gains `qualification_data` (non-
+canonical captured fields), `value_score` (deterministic, never blended with the
+repurposed completeness `qualification_score`), and conversation-activity
+timestamps. See ADR-0005 for the full rationale.
 
 ---
 

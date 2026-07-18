@@ -373,6 +373,12 @@ stages:
 >
 > **Runtime tier — BUILT** (2026-06-01, branch `feat/caller-classification-runtime`; see ADR-0002). Shipped in four slices: `leads.classification` (migration 014) + `support_touch`/`non_lead_contact` statuses (migration 015); `services/classification.py` (caller_classification + route_dispatch); `prompts/intent.py` (post-reply intent_classification); `services/spam.py` (Twilio Lookup spam scoring); per-adapter `lookup_by_phone` (GHL, Monday); and the digest recovery-rate denominator (`jobs/daily_digest.py`, over `classification='potential_lead'` only). Every failing or ambiguous path degrades to `potential_lead` — a lookup failure never drops a lead, and the post-reply intent classifier is the safety net. The neutral opener remains the connective tissue that keeps a misclassified contact recoverable.
 
+> **Contact-identity rework — BUILT** (2026-07-15, migrations 018–021; see ADR-0005). The lifecycle now runs on a durable **contact** (one per `client_id`+phone) instead of reasoning per-lead:
+> - `caller_classification` resolves the contact first, then routes over a time-bounded tree: cached known-caller types skip the CRM + spam lookups; an open lead resolves to `active_conversation` (fresh) or **`resumed_conversation`** (stale — reuse the lead); a terminal contact within the reopen window becomes **`returning_contact`** (new lead seeded with the contact's person facts). "What is this caller" resolves through a config-driven source-of-truth resolver (`contact_config`, `auto`|`crm`|`traceflow`) — one lifecycle, no no-CRM branch.
+> - `route_dispatch` handles the new routes; existing-customer and vendor get **distinct** acks (`existing_customer_template` / `vendor_ack_template`).
+> - `ai_qualification` is now config-driven (`qualification_schema`): **code owns termination** (completeness + hard gates + turn budget, deterministic), not the model. `qualification_score` is completeness; `value_score` is separate. The inbound-SMS path no longer silently drops a reply with no open lead — it opens one.
+> - On any terminal transition a rolling **`contacts.summary`** is written (Haiku, once) so the next call arrives with context. All three prompts share one context object with the business block cached.
+
 ---
 
 ## 4. Ongoing Retainer (post-launch)
