@@ -68,7 +68,11 @@ class OutcomeSource(StrEnum):
 class Lead(BaseModel):
     id: UUID
     client_id: UUID
+    # Source-system id, set at ingestion: Twilio CallSid, Shopify order id, etc.
+    # NOT the CRM id — that lives in crm_external_id (migration 026).
     external_id: str | None = None
+    # The lead's record id in the client's CRM, set on push (migration 026).
+    crm_external_id: str | None = None
     source_system: str
 
     # Link up to the durable contact (migration 018). Nullable: a lead may

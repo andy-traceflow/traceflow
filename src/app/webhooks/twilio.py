@@ -1042,14 +1042,14 @@ async def _maybe_push_to_crm(
     Fire-and-forget from the qualifier turn, with the same graceful-degradation
     contract as the rest of the pipeline — it never raises into the caller:
       * No-op when the client has no crm_provider or the provider has no adapter.
-      * Idempotent: a lead that already has an external_id is left alone, so a
+      * Idempotent: a lead that already has a crm_external_id is left alone, so a
         re-run can never create a duplicate CRM record (mirrors admin re-push).
       * On failure, the error is logged to the events stream so the founder can
         re-push from the admin tool; the lead row itself is untouched.
 
     The adapter call is external network IO and is made outside any DB
-    transaction; the resulting external_id + pushed_to_crm_at are committed in
-    a separate tenant-scoped block.
+    transaction; the resulting crm_external_id + pushed_to_crm_at are committed
+    in a separate tenant-scoped block.
     """
     if not config.crm_provider:
         return
@@ -1069,11 +1069,13 @@ async def _maybe_push_to_crm(
     lead = Lead(**dict(lead_row))
 
     # Already in the CRM — updates are the admin re-push's job, not the hot path.
-    if lead.external_id is not None:
+    # Gate on crm_external_id (not external_id, which holds the source-system id
+    # like a CallSid on every missed-call lead — migration 026).
+    if lead.crm_external_id is not None:
         return
 
     try:
-        external_id = await adapter.push_lead(lead, config)
+        crm_external_id = await adapter.push_lead(lead, config)
     except Exception as e:
         logger.warning(
             "crm push failed",
@@ -1098,9 +1100,9 @@ async def _maybe_push_to_crm(
 
     async with set_tenant_context(client_id) as conn:
         await conn.execute(
-            "UPDATE leads SET external_id = $1, pushed_to_crm_at = NOW() "
+            "UPDATE leads SET crm_external_id = $1, pushed_to_crm_at = NOW() "
             "WHERE id = $2 AND client_id = $3",
-            external_id,
+            crm_external_id,
             lead_id,
             client_id,
         )
@@ -1111,7 +1113,7 @@ async def _maybe_push_to_crm(
             """,
             client_id,
             lead_id,
-            {"provider": config.crm_provider, "external_id": external_id},
+            {"provider": config.crm_provider, "crm_external_id": crm_external_id},
         )
     logger.info(
         "crm push complete",
@@ -1119,7 +1121,7 @@ async def _maybe_push_to_crm(
             "client_id": str(client_id),
             "lead_id": str(lead_id),
             "provider": config.crm_provider,
-            "external_id": external_id,
+            "crm_external_id": crm_external_id,
         },
     )
 

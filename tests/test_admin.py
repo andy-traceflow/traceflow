@@ -137,6 +137,7 @@ def _lead_row(client_id: Any, external_id: str | None = None, **overrides: Any) 
         "id": uuid4(),
         "client_id": client_id,
         "external_id": external_id,
+        "crm_external_id": None,
         "source_system": "twilio_missed_call",
         "contact_name": "Jane Doe",
         "contact_company": None,
@@ -725,10 +726,15 @@ def test_repush_no_provider_400(client):
     assert resp.status_code == 400
 
 
-def test_repush_pushes_when_no_external_id(client):
+def test_repush_pushes_when_no_crm_external_id(client):
     cid = uuid4()
     conn = AsyncMock()
-    conn.fetchrow.side_effect = [_lead_row(cid, external_id=None), _config_row(cid)]
+    # A missed-call lead carries a source-system external_id (CallSid) but no
+    # crm_external_id — it must still PUSH, not take the update branch.
+    conn.fetchrow.side_effect = [
+        _lead_row(cid, external_id="CAcallsid123", crm_external_id=None),
+        _config_row(cid),
+    ]
     adapter = Mock()
     adapter.push_lead = AsyncMock(return_value="monday-item-999")
     adapter.update_lead = AsyncMock()
@@ -746,11 +752,11 @@ def test_repush_pushes_when_no_external_id(client):
     assert audit.await_args.kwargs["actor_user_id"] == ADMIN_ID
 
 
-def test_repush_updates_when_external_id_set(client):
+def test_repush_updates_when_crm_external_id_set(client):
     cid = uuid4()
     conn = AsyncMock()
     conn.fetchrow.side_effect = [
-        _lead_row(cid, external_id="monday-item-existing"),
+        _lead_row(cid, crm_external_id="monday-item-existing"),
         _config_row(cid),
     ]
     adapter = Mock()
@@ -761,6 +767,8 @@ def test_repush_updates_when_external_id_set(client):
     assert resp.status_code == 200
     assert resp.json()["action"] == "update"
     adapter.update_lead.assert_awaited_once()
+    # the CRM record id (not a source id) is what goes to the adapter
+    assert adapter.update_lead.await_args.args[0] == "monday-item-existing"
     adapter.push_lead.assert_not_called()
 
 

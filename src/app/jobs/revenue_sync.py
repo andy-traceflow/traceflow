@@ -55,7 +55,7 @@ class _Candidate:
     """A pushed lead still inside its attribution window."""
 
     lead_id: UUID
-    external_id: str
+    crm_external_id: str
     recovered_value: Decimal | None
 
 
@@ -87,10 +87,10 @@ async def _fetch_candidates(
 ) -> list[_Candidate]:
     rows = await conn.fetch(
         """
-        SELECT id, external_id, recovered_value
+        SELECT id, crm_external_id, recovered_value
         FROM leads
         WHERE client_id = $1
-          AND external_id IS NOT NULL
+          AND crm_external_id IS NOT NULL
           AND created_at >= $2
           AND is_test = FALSE
         """,
@@ -98,7 +98,7 @@ async def _fetch_candidates(
         since,
     )
     return [
-        _Candidate(r["id"], str(r["external_id"]), r["recovered_value"]) for r in rows
+        _Candidate(r["id"], str(r["crm_external_id"]), r["recovered_value"]) for r in rows
     ]
 
 
@@ -170,7 +170,7 @@ async def _sync_client(client_id: UUID, config: ClientConfig, *, now: datetime) 
     failed = 0
     for candidate in candidates:
         try:
-            value = await adapter.fetch_recovered_value(candidate.external_id, config)
+            value = await adapter.fetch_recovered_value(candidate.crm_external_id, config)
         except Exception as e:
             failed += 1
             logger.warning(

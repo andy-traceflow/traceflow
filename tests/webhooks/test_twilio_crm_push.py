@@ -48,6 +48,7 @@ def _lead_row(**overrides: Any) -> dict[str, Any]:
         "id": uuid4(),
         "client_id": uuid4(),
         "external_id": None,
+        "crm_external_id": None,
         "source_system": "twilio_missed_call",
         "contact_name": "Jane Doe",
         "contact_company": None,
@@ -116,16 +117,43 @@ async def test_happy_path_pushes_and_records():
 
     adapter.push_lead.assert_awaited_once()
     sql = " ".join(q for q, _ in conn.executed)
-    assert "UPDATE leads SET external_id" in sql
+    assert "UPDATE leads SET crm_external_id" in sql
     assert "crm_pushed" in sql
     assert "crm_push_failed" not in sql
+
+
+@pytest.mark.asyncio
+async def test_missed_call_lead_with_source_external_id_still_pushes():
+    """Regression: a missed-call lead carries the Twilio CallSid in external_id
+    but no crm_external_id — it must still push (the old guard on external_id
+    skipped every missed-call lead). See migration 026."""
+    client_id = uuid4()
+    lead_id = uuid4()
+    conn = _FakeConn(
+        _lead_row(
+            id=lead_id, client_id=client_id,
+            external_id="CAe9a01d90da9294fbaac79ad3835141b6",  # CallSid
+            crm_external_id=None,
+        )
+    )
+    adapter = MagicMock()
+    adapter.push_lead = AsyncMock(return_value="hs-contact-42")
+
+    with patch("app.webhooks.twilio.set_tenant_context", _ctx_factory(conn)), \
+         patch("app.webhooks.twilio.get_adapter", return_value=adapter):
+        await _maybe_push_to_crm(client_id, lead_id, _config(client_id))
+
+    adapter.push_lead.assert_awaited_once()
+    sql = " ".join(q for q, _ in conn.executed)
+    assert "UPDATE leads SET crm_external_id" in sql
+    assert "crm_pushed" in sql
 
 
 @pytest.mark.asyncio
 async def test_already_pushed_is_noop():
     client_id = uuid4()
     lead_id = uuid4()
-    conn = _FakeConn(_lead_row(id=lead_id, client_id=client_id, external_id="EXT-EXISTS"))
+    conn = _FakeConn(_lead_row(id=lead_id, client_id=client_id, crm_external_id="EXT-EXISTS"))
     adapter = MagicMock()
     adapter.push_lead = AsyncMock(return_value="should-not-be-called")
 
@@ -151,4 +179,4 @@ async def test_push_failure_records_event_and_does_not_raise():
 
     sql = " ".join(q for q, _ in conn.executed)
     assert "crm_push_failed" in sql
-    assert "UPDATE leads SET external_id" not in sql  # lead row left untouched
+    assert "UPDATE leads SET crm_external_id" not in sql  # lead row left untouched

@@ -82,7 +82,7 @@ async def test_sync_client_skips_non_crm_mode():
 async def test_sync_client_freezes_confirmed_value():
     client_id = uuid4()
     lead_id = uuid4()
-    conn = _FakeConn([{"id": lead_id, "external_id": "c1", "recovered_value": None}])
+    conn = _FakeConn([{"id": lead_id, "crm_external_id": "c1", "recovered_value": None}])
     adapter = MagicMock()
     adapter.fetch_recovered_value = AsyncMock(return_value=Decimal("4500"))
 
@@ -103,7 +103,7 @@ async def test_sync_client_freezes_confirmed_value():
 async def test_sync_client_no_update_when_value_unchanged():
     client_id = uuid4()
     lead_id = uuid4()
-    conn = _FakeConn([{"id": lead_id, "external_id": "c1", "recovered_value": Decimal("4500")}])
+    conn = _FakeConn([{"id": lead_id, "crm_external_id": "c1", "recovered_value": Decimal("4500")}])
     adapter = MagicMock()
     adapter.fetch_recovered_value = AsyncMock(return_value=Decimal("4500"))  # same as stored
 

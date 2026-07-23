@@ -167,12 +167,13 @@ async def repush_lead(
 ) -> dict[str, Any]:
     """Re-sync a lead to its client's CRM.
 
-    If the lead has no external_id, runs the adapter's push_lead — same
+    If the lead has no crm_external_id, runs the adapter's push_lead — same
     code path as the original push, just invoked manually (handles the
-    "original push failed" case). If the lead already has an external_id,
+    "original push failed" case). If the lead already has a crm_external_id,
     runs update_lead with the current canonical fields so the CRM record
     reflects the latest qualifier extractions. Never creates a duplicate
-    CRM record.
+    CRM record. (Gate on crm_external_id, not external_id — the latter holds
+    the source-system id, e.g. a CallSid on missed-call leads; migration 026.)
     """
     async with get_service_connection() as conn:
         lead_row = await conn.fetchrow(
@@ -201,22 +202,22 @@ async def repush_lead(
 
     # The adapter call goes out to an external CRM API — do it outside
     # the DB transaction, then re-open a service connection to commit
-    # the resulting external_id + pushed_to_crm_at.
-    if lead.external_id is None:
-        new_external_id = await adapter.push_lead(lead, config)
+    # the resulting crm_external_id + pushed_to_crm_at.
+    if lead.crm_external_id is None:
+        new_crm_external_id = await adapter.push_lead(lead, config)
         action = "push"
     else:
-        await adapter.update_lead(lead.external_id, _canonical_updates(lead), config)
-        new_external_id = lead.external_id
+        await adapter.update_lead(lead.crm_external_id, _canonical_updates(lead), config)
+        new_crm_external_id = lead.crm_external_id
         action = "update"
 
     async with get_service_connection() as conn:
         await conn.execute(
             """
-            UPDATE leads SET external_id = $1, pushed_to_crm_at = NOW()
+            UPDATE leads SET crm_external_id = $1, pushed_to_crm_at = NOW()
             WHERE id = $2 AND client_id = $3
             """,
-            new_external_id,
+            new_crm_external_id,
             lead_id,
             client_id,
         )
@@ -231,7 +232,7 @@ async def repush_lead(
         snapshot={
             "action": action,
             "provider": config.crm_provider,
-            "external_id": new_external_id,
+            "crm_external_id": new_crm_external_id,
         },
     )
     logger.info(
@@ -249,7 +250,9 @@ async def repush_lead(
         "client_id": str(client_id),
         "provider": config.crm_provider,
         "action": action,
-        "external_id": new_external_id,
+        # Key kept as external_id for the existing admin-UI contract; the value
+        # is the CRM record id (now sourced from crm_external_id).
+        "external_id": new_crm_external_id,
     }
 
 
