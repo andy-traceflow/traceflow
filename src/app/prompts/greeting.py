@@ -133,3 +133,43 @@ def render_vendor_ack(config: ClientConfig) -> str:
     if template:
         return template.replace("{business_name}", business)
     return f"Thanks for reaching out to {business}. We'll be in touch if we need anything."
+
+
+def render_handoff(config: ClientConfig) -> str:
+    """Closing SMS when qualification ends and a human takes over.
+
+    Code owns termination (services/qualification.should_terminate), so code
+    owns the closing too. On the terminal turn the model is still
+    mid-conversation: its text is usually a preamble ("Got it!") or a follow-up
+    question the system will never process. Neither tells the caller what
+    happens next, so we replace it with this.
+
+    The promise here is the product: a caller who reached the end of
+    qualification is told a real person will contact them.
+    """
+    business = config.business_name or "us"
+    template = config.handoff_template
+    if template:
+        return template.replace("{business_name}", business)
+    return (
+        "Perfect — that's everything I need for now. "
+        f"Someone from {business} will reach out shortly to follow up. "
+        "Thanks for your patience!"
+    )
+
+
+def render_decline(config: ClientConfig) -> str:
+    """Closing SMS when a hard gate disqualified the lead (out of service area,
+    or below a disqualify_if floor).
+
+    Deliberately does NOT promise a callback — no one is going to call, and
+    telling the caller otherwise is worse than saying nothing.
+    """
+    business = config.business_name or "us"
+    template = config.decline_template
+    if template:
+        return template.replace("{business_name}", business)
+    return (
+        f"Thanks for reaching out to {business}! Unfortunately it looks like "
+        "we're not able to help with this one, but we appreciate you getting in touch."
+    )

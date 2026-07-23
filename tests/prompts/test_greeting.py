@@ -95,6 +95,51 @@ def test_vendor_ack_default_is_minimal() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Qualification closings (migration 025)
+#
+# A conversation that reaches the end of qualification must tell the caller a
+# real person will contact them. Before this, whatever the model emitted on the
+# terminal turn was sent as-is — in prod that was a bare "Got it!".
+# ---------------------------------------------------------------------------
+
+
+def test_handoff_default_promises_a_human_will_follow_up() -> None:
+    text = greeting.render_handoff(_make_config(brand={"business_name": "Acme"}))
+    assert "Acme" in text
+    assert "reach out" in text.lower(), "caller must be told a person will contact them"
+
+
+def test_handoff_uses_template_with_business_name() -> None:
+    config = _make_config(
+        handoff_template="All set — {business_name} will call you within the hour.",
+        brand={"business_name": "Acme"},
+    )
+    assert greeting.render_handoff(config) == "All set — Acme will call you within the hour."
+
+
+def test_decline_default_does_not_promise_a_callback() -> None:
+    """A hard-gated lead nobody will call must not be told otherwise."""
+    text = greeting.render_decline(_make_config(brand={"business_name": "Acme"})).lower()
+    assert "acme" in text
+    for promise in ("reach out", "will call", "will contact", "be in touch"):
+        assert promise not in text, f"decline must not promise contact: {promise!r}"
+
+
+def test_decline_uses_template_with_business_name() -> None:
+    config = _make_config(
+        decline_template="Sorry — {business_name} doesn't service that area.",
+        brand={"business_name": "Acme"},
+    )
+    assert greeting.render_decline(config) == "Sorry — Acme doesn't service that area."
+
+
+def test_closings_fall_back_when_business_name_missing() -> None:
+    config = _make_config(brand={})
+    assert "us" in greeting.render_handoff(config)
+    assert "us" in greeting.render_decline(config)
+
+
+# ---------------------------------------------------------------------------
 # generate_greeting (Anthropic client mocked)
 # ---------------------------------------------------------------------------
 

@@ -35,6 +35,11 @@ QUALIFIER_MODEL = "claude-sonnet-4-6"
 QUALIFIER_MAX_TOKENS = 300
 DEFAULT_QUALIFIER_VERSION = "v2"
 
+# Max model round-trips per turn. One round is the normal case; a second covers
+# "tool_use with no text", where we return the tool_result so the model can
+# write its SMS. Bounded so a model that only ever calls the tool can't spin.
+_MAX_TOOL_ROUNDS = 3
+
 # v1 — legacy plain-string prompt for pinned clients. It still tells the model to
 # set qualification_status; the caller ignores that (code owns termination).
 QUALIFIER_SYSTEM_V1 = """\
@@ -123,25 +128,67 @@ async def qualifier_turn(
     system = _build_system(config, version, schema, state, turn_count, contact, timezone)
     tool = build_update_lead_tool(schema)
 
-    try:
-        response = await get_anthropic_client().messages.create(
-            model=QUALIFIER_MODEL,
-            max_tokens=QUALIFIER_MAX_TOKENS,
-            system=system,
-            messages=api_messages,
-            tools=[tool],
-        )
-    except Exception as e:
-        logger.warning("qualifier turn failed", exc_info=e)
-        return None
-
+    client = get_anthropic_client()
+    messages: list[dict[str, Any]] = list(api_messages)
     reply_text = ""
     extracted: dict[str, Any] = {}
-    for block in response.content:
-        if block.type == "text":
-            reply_text += block.text
-        elif block.type == "tool_use" and block.name == "update_lead":
-            extracted.update(block.input)
+
+    # Tool-use continuation loop. A turn where the model returns ONLY a
+    # `update_lead` tool_use block and no text is normal Messages API behavior
+    # (stop_reason == "tool_use") — but it leaves us with nothing to send. The
+    # fix is the standard loop: hand the tool_result back so the model can write
+    # its actual SMS reply. Without it the conversation silently dead-ended —
+    # fields were extracted, no reply went out, and the caller waited forever
+    # (prod incident 2026-07-22, died right after the ZIP question).
+    #
+    # We only continue while `reply_text` is still empty. When the model emits
+    # text alongside the tool call — the common case — that text IS the reply,
+    # and looping again would generate a second, duplicate SMS.
+    for _ in range(_MAX_TOOL_ROUNDS):
+        try:
+            response = await client.messages.create(
+                model=QUALIFIER_MODEL,
+                max_tokens=QUALIFIER_MAX_TOKENS,
+                system=system,
+                messages=messages,
+                tools=[tool],
+            )
+        except Exception as e:
+            logger.warning("qualifier turn failed", exc_info=e)
+            # Keep whatever a prior round already produced rather than losing it.
+            return (reply_text.strip(), extracted, version) if reply_text else None
+
+        tool_uses = []
+        for block in response.content:
+            if block.type == "text":
+                reply_text += block.text
+            elif block.type == "tool_use" and block.name == "update_lead":
+                extracted.update(block.input)
+                tool_uses.append(block)
+
+        if reply_text.strip() or not tool_uses:
+            break
+
+        # Tool call with no reply text — echo the assistant turn plus a
+        # tool_result for every tool_use id (the API rejects a partial set) and
+        # let the model produce the message it owes the caller.
+        messages.append({"role": "assistant", "content": response.content})
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": tu.id, "content": "recorded"}
+                    for tu in tool_uses
+                ],
+            }
+        )
+
+    if not reply_text.strip():
+        logger.warning(
+            "qualifier produced no reply text after %d round(s)",
+            _MAX_TOOL_ROUNDS,
+            extra={"fields_extracted": sorted(extracted)},
+        )
 
     return reply_text.strip(), extracted, version
 

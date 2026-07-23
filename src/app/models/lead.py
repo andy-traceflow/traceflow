@@ -16,7 +16,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class QualificationStatus(StrEnum):
@@ -117,6 +117,22 @@ class Lead(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_validator("notes", mode="before")
+    @classmethod
+    def _coerce_null_notes(cls, value: Any) -> Any:
+        """`leads.notes` is nullable in Postgres, but the contract here is
+        "always a string" — the CRM adapters push `lead.notes` straight into
+        their payloads, so None would leak a null into a client's CRM.
+
+        Rows written without a notes value therefore come back as None and used
+        to blow up `Lead(**dict(row))` with a ValidationError, which took down
+        the whole inbound-SMS reply path (the caller never got past the first
+        question). Coerce to "" rather than widening the field to `str | None`,
+        which would push the same None downstream. Migration 024 also backfills
+        and defaults the column; this stays as defense in depth for old rows.
+        """
+        return "" if value is None else value
 
 
 class LeadCreate(BaseModel):

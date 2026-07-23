@@ -25,7 +25,13 @@ from app.models.client_config import ClientConfig
 from app.models.contact import Contact, ContactType
 from app.models.lead import Lead, LeadCreate, LeadUpdate, QualificationStatus
 from app.models.message import Message
-from app.prompts.greeting import generate_greeting, render_customer_ack, render_vendor_ack
+from app.prompts.greeting import (
+    generate_greeting,
+    render_customer_ack,
+    render_decline,
+    render_handoff,
+    render_vendor_ack,
+)
 from app.prompts.intent import DEFAULT_INTENT_VERSION, Intent, classify_intent
 from app.prompts.qualifier import qualifier_turn
 from app.prompts.summarize import persist_summary, summarize_conversation
@@ -454,19 +460,73 @@ async def _process_sms_reply(client_id: UUID, payload: dict[str, Any]) -> None:
             )
             return
 
+        # Most-recent lead for this contact, of ANY status, plus a SQL-computed
+        # verdict on whether its last activity is inside the terminal-resume
+        # window. Both operands come from Postgres (last_*_at and now()), so the
+        # window never couples the app clock to the DB clock. This lookup runs
+        # BEFORE the new inbound is inserted, so last_inbound_at still reflects
+        # the prior conversation — exactly the gap we want to bound.
         lead_row = await conn.fetchrow(
             """
-            SELECT *
+            SELECT *,
+                   GREATEST(created_at,
+                            COALESCE(last_inbound_at, created_at),
+                            COALESCE(last_outbound_at, created_at))
+                     >= now() - make_interval(mins => $2) AS within_resume_window
             FROM leads
-            WHERE contact_id = $1 AND qualification_status IN ('unqualified', 'qualifying')
+            WHERE contact_id = $1
             ORDER BY created_at DESC
             LIMIT 1
             """,
             contact.id,
+            config.terminal_resume_window_minutes,
         )
-        if lead_row is None:
-            # No open lead: a cold inbound (texted without calling first) or a
-            # follow-up after a terminal status. Either way it's a real lead —
+
+        # Three-way branch: keep an open lead as-is; RESUME a recently-terminal
+        # lead (same lead_id, keep captured fields + turn_count); otherwise open
+        # a fresh lead (cold inbound, or a terminal lead beyond the window = a
+        # genuinely new inquiry).
+        open_new = lead_row is None
+        if lead_row is not None:
+            existing_status = QualificationStatus(lead_row["qualification_status"])
+            is_open = existing_status in (
+                QualificationStatus.unqualified,
+                QualificationStatus.qualifying,
+            )
+            if is_open:
+                pass  # genuine mid-conversation lead — unchanged
+            elif lead_row["within_resume_window"]:
+                # Terminal, but the contact texted back inside the window. Flip
+                # to 'qualifying' so the intent gate (which fires only on
+                # 'unqualified') is skipped downstream, and the qualifier asks
+                # the NEXT missing field rather than re-interrogating.
+                await conn.execute(
+                    "UPDATE leads SET qualification_status = 'qualifying' "
+                    "WHERE id = $1 AND client_id = $2",
+                    lead_row["id"],
+                    client_id,
+                )
+                lead_row = dict(lead_row)
+                lead_row["qualification_status"] = "qualifying"
+                await conn.execute(
+                    """
+                    INSERT INTO events (client_id, lead_id, event_type, payload)
+                    VALUES ($1, $2, 'lead_resumed', $3)
+                    """,
+                    client_id,
+                    lead_row["id"],
+                    {
+                        "from": caller,
+                        "contact_id": str(contact.id),
+                        "prior_status": existing_status.value,
+                    },
+                )
+            else:
+                open_new = True  # terminal + outside window → new inquiry
+
+        if open_new:
+            # Cold inbound (texted without calling first) or a terminal lead
+            # beyond the resume window. Either way it's a real, distinct lead —
             # open a new one linked to the contact, seeded with known facts.
             # This closes the silent-drop bug: an inbound SMS is never ignored.
             facts = contact.known_facts
@@ -495,6 +555,8 @@ async def _process_sms_reply(client_id: UUID, payload: dict[str, Any]) -> None:
                 {"from": caller, "contact_id": str(contact.id)},
             )
 
+        # The synthetic within_resume_window column is dropped by the Lead model
+        # (extra fields ignored; no extra="forbid").
         lead = Lead(**dict(lead_row))
         lead_id = lead.id
         prior_status = lead.qualification_status
@@ -527,6 +589,12 @@ async def _process_sms_reply(client_id: UUID, payload: dict[str, Any]) -> None:
 
     history = [Message(**dict(r)) for r in history_rows]
 
+    # Termination counts CUSTOMER replies only. turn_count (bumped on BOTH
+    # directions by _touch_lead_activity) stays as the activity counter that
+    # feeds the last-activity / resume windows; only the loop-control integer
+    # changes. history already includes the inbound just inserted above.
+    inbound_turns = sum(1 for m in history if m.direction == "inbound")
+
     # Intent gate: on the FIRST reply (still 'unqualified'), triage before the
     # qualifier. Genuine sales — or a classifier outage — proceeds; existing
     # customers, non-leads, and spam route off the sales track and return here.
@@ -543,7 +611,7 @@ async def _process_sms_reply(client_id: UUID, payload: dict[str, Any]) -> None:
     # and termination. The model never sets qualification_status.
     schema = get_schema(config)
     state = merge_state(lead, contact)
-    current_turn = lead.turn_count + 1  # includes the inbound just recorded
+    current_turn = inbound_turns  # customer replies only; the budget vs max_turns
 
     turn = await qualifier_turn(
         config, history, schema, state, current_turn, contact=contact, timezone=timezone
@@ -589,9 +657,32 @@ async def _process_sms_reply(client_id: UUID, payload: dict[str, Any]) -> None:
     )
     new_status = _STATUS_BY_TERMINATION.get(termination) if termination else None
 
+    # Code owns termination, so code owns the closing message. On a terminal
+    # turn the model is still mid-conversation — its text is typically a
+    # preamble ("Got it!") or a follow-up question we will never process, so
+    # replace it with a deterministic ending. A lead a human should call ALWAYS
+    # hears that a real person will follow up; a hard-gated lead gets a polite
+    # decline instead, since promising a callback nobody will make is worse.
+    is_closing = termination is not None
+    if is_closing:
+        reply_text = (
+            render_decline(config)
+            if termination == TerminationReason.disqualified
+            else render_handoff(config)
+        )
+
     sms_result = None
     if reply_text and config.twilio_number:
         sms_result = await send_sms(to=caller, body=reply_text, from_number=config.twilio_number)
+    elif not reply_text:
+        # The qualifier ran (extractions above were applied) but produced no
+        # message. Nothing goes out, so the caller is left hanging — log loudly
+        # so this is greppable instead of looking like a normal turn. The
+        # qualifier's tool-use continuation loop should make this rare.
+        logger.warning(
+            "qualifier turn produced no reply — nothing sent to caller",
+            extra={"client_id": str(client_id), "lead_id": str(lead_id)},
+        )
 
     # Block 2: apply extractions + scores + status + person facts; record output.
     async with set_tenant_context(client_id) as conn:
@@ -629,12 +720,13 @@ async def _process_sms_reply(client_id: UUID, payload: dict[str, Any]) -> None:
                 INSERT INTO messages
                     (client_id, lead_id, direction, channel, body,
                      ai_generated, prompt_version, raw_payload)
-                VALUES ($1, $2, 'outbound', 'sms', $3, TRUE, $4, $5)
+                VALUES ($1, $2, 'outbound', 'sms', $3, $4, $5, $6)
                 """,
                 client_id,
                 lead_id,
                 reply_text,
-                f"qualifier:{version}",
+                not is_closing,  # the closing is a static template, not AI output
+                "closing:v1" if is_closing else f"qualifier:{version}",
                 sms_result,
             )
             await _touch_lead_activity(conn, lead_id, client_id, direction="outbound")

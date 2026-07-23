@@ -786,6 +786,224 @@ async def test_process_sms_reply_cold_inbound_opens_lead():
     mock_sms.assert_called()
 
 
+# ---------------------------------------------------------------------------
+# Terminal-lead resume (no lead-splitting) + inbound-only turn budget
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_process_sms_reply_resumes_terminal_lead_within_window():
+    """A terminal lead texted back inside the window RESUMES the same lead:
+    flip to qualifying, emit lead_resumed, skip the intent gate, no new lead."""
+    client_id = uuid4()
+    lead_id = uuid4()
+    conn = AsyncMock()
+    conn.fetchrow.side_effect = [
+        _config_row(client_id),
+        _lead_row(
+            lead_id,
+            qualification_status="needs_review",
+            within_resume_window=True,
+            turn_count=6,
+            service_type="tile",
+        ),
+    ]
+    conn.fetchval.return_value = False
+    conn.fetch.return_value = [
+        _message_row("inbound", "Tile"),
+        _message_row("outbound", "What ZIP?"),
+        _message_row("inbound", "89145"),
+    ]
+
+    with (
+        patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        _patch_resolve(),
+        patch("app.webhooks.twilio.classify_intent", new=AsyncMock()) as mock_intent,
+        patch(
+            "app.webhooks.twilio.qualifier_turn",
+            new=AsyncMock(return_value=("How many square feet?", {}, "v1")),
+        ),
+        patch("app.webhooks.twilio.send_sms", new=AsyncMock(return_value={"sid": "SM-r"})) as mock_sms,
+    ):
+        await twilio_webhook._process_sms_reply(
+            client_id, {"From": "+15551112222", "Body": "89145", "MessageSid": "MM-res"}
+        )
+
+    mock_intent.assert_not_awaited()  # resume skips the intent gate entirely
+    assert not any("INSERT INTO leads" in c.args[0] for c in conn.fetchrow.call_args_list)
+    sqls = [c.args[0] for c in conn.execute.call_args_list]
+    assert any("UPDATE leads SET qualification_status = 'qualifying'" in s for s in sqls)
+    assert any("lead_resumed" in s for s in sqls)
+    assert not any("intent_classified" in s for s in sqls)
+    mock_sms.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_process_sms_reply_opens_new_lead_outside_window():
+    """A terminal lead beyond the window is a genuinely new inquiry → open a
+    fresh lead and run the intent gate; no resume."""
+    client_id = uuid4()
+    old_lead_id = uuid4()
+    new_lead_id = uuid4()
+    conn = AsyncMock()
+    conn.fetchrow.side_effect = [
+        _config_row(client_id),
+        _lead_row(old_lead_id, qualification_status="qualified", within_resume_window=False),
+        _lead_row(new_lead_id),
+    ]
+    conn.fetchval.return_value = False
+    conn.fetch.return_value = [_message_row("inbound", "New bathroom project")]
+
+    with (
+        patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        _patch_resolve(),
+        patch("app.webhooks.twilio.classify_intent", new=AsyncMock(return_value=Intent.sales)) as mock_intent,
+        patch(
+            "app.webhooks.twilio.qualifier_turn",
+            new=AsyncMock(return_value=("What kind of work?", {}, "v1")),
+        ),
+        patch("app.webhooks.twilio.send_sms", new=AsyncMock(return_value={"sid": "SM-n"})),
+    ):
+        await twilio_webhook._process_sms_reply(
+            client_id,
+            {"From": "+15551112222", "Body": "New bathroom project", "MessageSid": "MM-new"},
+        )
+
+    mock_intent.assert_awaited()  # a fresh unqualified lead runs the gate
+    assert any("INSERT INTO leads" in c.args[0] for c in conn.fetchrow.call_args_list)
+    sqls = [c.args[0] for c in conn.execute.call_args_list]
+    assert any("inbound_sms_lead_opened" in s for s in sqls)
+    assert not any("lead_resumed" in s for s in sqls)
+
+
+@pytest.mark.asyncio
+async def test_process_sms_reply_resume_skips_intent_gate():
+    """Resume goes straight to the qualifier: no intent classification, a
+    qualifier_turn event is recorded. Also proves resume works from a
+    'qualified' terminal status, not just needs_review."""
+    client_id = uuid4()
+    lead_id = uuid4()
+    conn = AsyncMock()
+    conn.fetchrow.side_effect = [
+        _config_row(client_id),
+        _lead_row(
+            lead_id,
+            qualification_status="qualified",
+            within_resume_window=True,
+            service_type="tile",
+        ),
+    ]
+    conn.fetchval.return_value = False
+    conn.fetch.return_value = [_message_row("inbound", "actually one more thing")]
+
+    with (
+        patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        _patch_resolve(),
+        patch("app.webhooks.twilio.classify_intent", new=AsyncMock()) as mock_intent,
+        patch(
+            "app.webhooks.twilio.qualifier_turn",
+            new=AsyncMock(return_value=("Sure — what's your ZIP?", {}, "v1")),
+        ),
+        patch("app.webhooks.twilio.send_sms", new=AsyncMock(return_value={"sid": "SM-s"})),
+    ):
+        await twilio_webhook._process_sms_reply(
+            client_id,
+            {"From": "+15551112222", "Body": "actually one more thing", "MessageSid": "MM-skip"},
+        )
+
+    mock_intent.assert_not_awaited()
+    sqls = [c.args[0] for c in conn.execute.call_args_list]
+    assert not any("intent_classified" in s for s in sqls)
+    assert any("qualifier_turn" in s for s in sqls)
+
+
+@pytest.mark.asyncio
+async def test_process_sms_reply_turn_budget_counts_inbound_only():
+    """turn_count counts both directions, but only CUSTOMER replies count toward
+    max_turns. 5 inbound of 11 messages must NOT force needs_review, even though
+    the old turn_count+1 (=12) logic would have."""
+    client_id = uuid4()
+    lead_id = uuid4()
+    conn = AsyncMock()
+    conn.fetchrow.side_effect = [
+        _config_row(client_id),
+        _lead_row(lead_id, qualification_status="qualifying", turn_count=11),
+    ]
+    conn.fetchval.return_value = False
+    conn.fetch.return_value = (
+        [_message_row("inbound", f"in {i}") for i in range(5)]
+        + [_message_row("outbound", f"out {i}") for i in range(6)]
+    )
+
+    with (
+        patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        _patch_resolve(),
+        patch("app.webhooks.twilio.classify_intent", new=AsyncMock()) as mock_intent,
+        patch(
+            "app.webhooks.twilio.qualifier_turn",
+            new=AsyncMock(return_value=("What's your ZIP?", {}, "v1")),
+        ),
+        patch("app.webhooks.twilio.send_sms", new=AsyncMock(return_value={"sid": "SM-b"})) as mock_sms,
+    ):
+        await twilio_webhook._process_sms_reply(
+            client_id, {"From": "+15551112222", "Body": "in 5", "MessageSid": "MM-budget"}
+        )
+
+    mock_intent.assert_not_awaited()  # already qualifying → no intent gate
+    sqls = [c.args[0] for c in conn.execute.call_args_list]
+    assert not any("needs_review" in s for s in sqls)
+    assert mock_sms.call_args.kwargs["body"] == "What's your ZIP?"
+
+
+@pytest.mark.asyncio
+async def test_process_sms_reply_resumed_lead_qualifies():
+    """A resumed lead that completes qualification updates the SAME lead to
+    'qualified' and pushes to CRM once — no split, no duplicate record."""
+    client_id = uuid4()
+    lead_id = uuid4()
+    conn = AsyncMock()
+    conn.fetchrow.side_effect = [
+        _config_row(client_id),
+        _lead_row(
+            lead_id,
+            qualification_status="needs_review",
+            within_resume_window=True,
+            service_type="tile",
+            address="89145",
+            sqft=250,
+            timeframe="asap",
+        ),
+    ]
+    conn.fetchval.return_value = False
+    conn.fetch.return_value = [_message_row("inbound", "250")]
+
+    with (
+        patch("app.webhooks.twilio.set_tenant_context", new=_fake_tenant_ctx(conn)),
+        _patch_resolve(),
+        patch("app.webhooks.twilio.classify_intent", new=AsyncMock()),
+        patch(
+            # Seeded fields already total 65% (service+zip+sqft+timeframe) ≥ 60,
+            # so the resumed turn qualifies without any new extraction.
+            "app.webhooks.twilio.qualifier_turn",
+            new=AsyncMock(return_value=("Got it!", {}, "v1")),
+        ),
+        patch("app.webhooks.twilio.send_sms", new=AsyncMock(return_value={"sid": "SM-q"})),
+        patch("app.webhooks.twilio._maybe_push_to_crm", new=AsyncMock()) as mock_crm,
+        patch("app.webhooks.twilio.summarize_conversation", new=AsyncMock(return_value=None)),
+    ):
+        await twilio_webhook._process_sms_reply(
+            client_id, {"From": "+15551112222", "Body": "250", "MessageSid": "MM-q"}
+        )
+
+    # Same lead reused (no INSERT), moved to qualified, pushed once.
+    assert not any("INSERT INTO leads" in c.args[0] for c in conn.fetchrow.call_args_list)
+    status_update = next(
+        c for c in conn.execute.call_args_list
+        if "UPDATE leads SET qualification_status = $2" in c.args[0]
+    )
+    assert status_update.args[2] == "qualified"
+    mock_crm.assert_awaited_once()
+
+
 @pytest.mark.asyncio
 async def test_process_sms_reply_drops_blocked_contact():
     """A blocked (or spam) contact texting in gets no lead, no reply, no spend."""

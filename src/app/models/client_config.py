@@ -31,6 +31,11 @@ class ClientConfig(BaseModel):
     # Non-lead route acks (migration 021) — distinct messages, both nullable.
     existing_customer_template: str | None = None
     vendor_ack_template: str | None = None
+    # Qualification closings (migration 025) — rendered by
+    # prompts.greeting.render_handoff / render_decline when code terminates the
+    # conversation. Nullable; NULL falls back to the default there.
+    handoff_template: str | None = None
+    decline_template: str | None = None
     prompt_versions: dict[str, str] = Field(default_factory=dict)
     ai_interaction_cap_monthly: int = 1000
     ai_interactions_used: int = 0
@@ -66,6 +71,10 @@ class ClientConfig(BaseModel):
     # empty/invalid.
     qualification_schema: dict[str, Any] = Field(default_factory=dict)
 
+    # Structured business identity + logistics captured at onboarding
+    # (migration 023). Read via the accessors below. Never holds credentials.
+    business_profile: dict[str, Any] = Field(default_factory=dict)
+
     updated_at: datetime
 
     model_config = {"from_attributes": True}
@@ -100,6 +109,23 @@ class ClientConfig(BaseModel):
     def feature(self, flag: str, default: bool = False) -> bool:
         value = self.feature_flags.get(flag, default)
         return bool(value)
+
+    # ------------------------------------------------------------------
+    # Business profile (migration 023) — onboarding identity + logistics.
+    # Accessors return None/{} on absence so callers never branch on shape.
+    # ------------------------------------------------------------------
+    @property
+    def website_url(self) -> str | None:
+        return self.business_profile.get("website_url") or None
+
+    @property
+    def business_address(self) -> str | None:
+        return self.business_profile.get("address") or None
+
+    def business_contact(self, role: str = "owner") -> dict[str, str]:
+        """Structured person block for 'owner' or 'day_to_day'; {} when absent."""
+        value = self.business_profile.get(role)
+        return value if isinstance(value, dict) else {}
 
     def webhook_secret(self, integration: str) -> str | None:
         return self.webhook_signing_secrets.get(integration)
@@ -172,6 +198,17 @@ class ClientConfig(BaseModel):
     @property
     def reuse_lead_on_resume(self) -> bool:
         return bool(self.conversation_config.get("reuse_lead_on_resume", True))
+
+    @property
+    def terminal_resume_window_minutes(self) -> int:
+        """Minutes after a lead reaches a TERMINAL status during which a new
+        inbound SMS RESUMES that same lead (flip back to qualifying) instead of
+        opening a fresh one. Prevents lead-splitting / re-interrogation. Backed
+        by conversation_config; default 120."""
+        try:
+            return int(self.conversation_config.get("terminal_resume_window_minutes", 120))
+        except (TypeError, ValueError):
+            return 120
 
     # ------------------------------------------------------------------
     # Contact source-of-truth resolver config (migration 019, Slice 2.5).

@@ -185,3 +185,106 @@ async def test_qualifier_turn_none_on_api_error() -> None:
             _make_config(), [_msg("inbound", "hi")], default_schema(), {}, 1
         )
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Tool-use continuation loop
+#
+# Regression cover for the 2026-07-22 prod incident: the model returned ONLY an
+# `update_lead` tool_use block (no text) — normal Messages API behavior — so the
+# turn extracted the ZIP but produced no reply. Nothing was sent, the session
+# didn't terminate, and the caller waited forever.
+# ---------------------------------------------------------------------------
+
+
+async def _run_turn(mock_client: Mock, history: list[Message] | None = None):
+    with (
+        patch("app.prompts.qualifier.get_settings") as mock_settings,
+        patch("app.prompts.qualifier.get_anthropic_client", return_value=mock_client),
+    ):
+        mock_settings.return_value.anthropic_api_key = "sk-ant-test"
+        return await qualifier.qualifier_turn(
+            _make_config(),
+            history or [_msg("inbound", "89145")],
+            default_schema(),
+            {},
+            3,
+        )
+
+
+@pytest.mark.asyncio
+async def test_tool_use_without_text_continues_until_reply() -> None:
+    """The exact prod failure: tool_use with no text must not dead-end."""
+    mock_client = Mock()
+    mock_client.messages.create = AsyncMock(
+        side_effect=[
+            _fake_response(_tool_block({"zip": "89145"})),          # tool only
+            _fake_response(_text_block("Thanks! Roughly how many sqft?")),
+        ]
+    )
+
+    result = await _run_turn(mock_client)
+
+    assert result is not None
+    reply, extracted, _ = result
+    assert reply == "Thanks! Roughly how many sqft?", "no reply sent — caller left hanging"
+    assert extracted == {"zip": "89145"}, "extraction from the first round must survive"
+    assert mock_client.messages.create.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_continuation_sends_tool_result_for_every_tool_use() -> None:
+    """The follow-up request must echo the assistant turn and answer each
+    tool_use id — the API rejects a partial tool_result set."""
+    tool = _tool_block({"zip": "89145"})
+    mock_client = Mock()
+    mock_client.messages.create = AsyncMock(
+        side_effect=[_fake_response(tool), _fake_response(_text_block("ok"))]
+    )
+
+    await _run_turn(mock_client)
+
+    second_call = mock_client.messages.create.await_args_list[1].kwargs["messages"]
+    assert second_call[-2]["role"] == "assistant"
+    results = second_call[-1]
+    assert results["role"] == "user"
+    assert [b["type"] for b in results["content"]] == ["tool_result"]
+    assert results["content"][0]["tool_use_id"] == tool.id
+
+
+@pytest.mark.asyncio
+async def test_text_alongside_tool_use_does_not_loop() -> None:
+    """The common case: text + tool_use in one response. Looping again would
+    send the caller a second, duplicate SMS."""
+    mock_client = Mock()
+    mock_client.messages.create = AsyncMock(
+        return_value=_fake_response(
+            _text_block("Great choice! What ZIP is the project in?"),
+            _tool_block({"service_type": "flooring"}),
+        )
+    )
+
+    result = await _run_turn(mock_client)
+
+    assert result is not None
+    reply, extracted, _ = result
+    assert reply == "Great choice! What ZIP is the project in?"
+    assert extracted == {"service_type": "flooring"}
+    assert mock_client.messages.create.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_tool_only_responses_stop_at_round_cap() -> None:
+    """A model that never writes text must not spin forever."""
+    mock_client = Mock()
+    mock_client.messages.create = AsyncMock(
+        return_value=_fake_response(_tool_block({"zip": "89145"}))
+    )
+
+    result = await _run_turn(mock_client)
+
+    assert result is not None
+    reply, extracted, _ = result
+    assert reply == ""
+    assert extracted == {"zip": "89145"}
+    assert mock_client.messages.create.await_count == qualifier._MAX_TOOL_ROUNDS
