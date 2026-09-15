@@ -9,6 +9,25 @@ import type { QualField, QualFieldType, QualificationSchema } from "../api";
 const LEAD_COLUMNS = ["contact_name", "service_type", "sqft", "budget_range", "timeframe", "address"];
 const TYPES: QualFieldType[] = ["string", "number", "enum", "boolean"];
 
+/** Autocomplete suggestions for a field's `key`. Deliberately a <datalist>, not
+ *  a <select>: `key` is a free-form config identifier (models/qualification.py),
+ *  so a client can define fields we've never heard of. These are the keys the
+ *  default surface-contractor schema ships with — offered to avoid typos, never
+ *  enforced. (`maps_to` is the constrained one, and it IS a dropdown below.) */
+const COMMON_FIELD_KEYS = [
+  "zip",
+  "service_type",
+  "material",
+  "scope_size",
+  "timeframe",
+  "budget",
+  "contact_name",
+  "address",
+  "property_type",
+  "decision_maker",
+];
+const FIELD_KEYS_LIST_ID = "qual-field-key-suggestions";
+
 const csv = (xs: string[] | null | undefined) => (xs ?? []).join(", ");
 const parseCsv = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
 
@@ -100,6 +119,14 @@ export default function QualificationEditor({
         </label>
       </div>
 
+      {/* Key autocomplete options — rendered once, shared by every field row
+          (a datalist id must be unique in the document). */}
+      <datalist id={FIELD_KEYS_LIST_ID}>
+        {COMMON_FIELD_KEYS.map((k) => (
+          <option key={k} value={k} />
+        ))}
+      </datalist>
+
       {/* Field list */}
       <div className="space-y-3">
         {schema.fields.map((f, i) => (
@@ -108,6 +135,10 @@ export default function QualificationEditor({
               <input
                 value={f.key}
                 disabled={readOnly}
+                list={FIELD_KEYS_LIST_ID}
+                aria-label="Field key"
+                spellCheck={false}
+                autoComplete="off"
                 onChange={(e) => setField(i, { key: e.target.value })}
                 className="w-40 rounded border border-border bg-surface px-2 py-1 font-mono text-xs text-signal outline-none focus:border-signal"
               />

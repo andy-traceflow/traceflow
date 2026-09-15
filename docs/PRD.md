@@ -433,7 +433,8 @@ Every lead in the system, regardless of source, looks the same internally:
 ```python
 class Lead:
     client_id: UUID
-    external_id: str          # ID in their CRM
+    external_id: str          # source-system id (CallSid, order id, ...)
+    crm_external_id: str      # ID in their CRM after push (migration 026)
     source_system: str        # 'ghl', 'hubspot', 'monday', 'manual', etc.
     contact_name: str
     phone: str

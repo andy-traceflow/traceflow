@@ -43,7 +43,8 @@ SELECT c.id AS client_id, c.slug, c.business_name, c.status, c.tier, c.timezone,
        cc.owner_alert_phones, cc.feature_flags, cc.classification_config,
        cc.existing_customer_alert_contact, cc.vendor_allowlist, cc.revenue_config,
        cc.conversation_config, cc.contact_config, cc.qualification_schema,
-       cc.existing_customer_template, cc.vendor_ack_template,
+       cc.existing_customer_template, cc.vendor_ack_template, cc.business_profile,
+       cc.handoff_template, cc.decline_template,
        cc.updated_at
 FROM clients c
 JOIN client_configs cc ON cc.client_id = c.id

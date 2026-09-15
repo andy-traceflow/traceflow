@@ -1,10 +1,13 @@
-"""One-command tenant provisioner.
+"""One-command tenant provisioner (CLI).
 
-Reads a YAML config describing a new client (business info, integration
-choice, brand, etc.) and inserts the matching clients + client_configs
-rows. Stub for Phase 0 — the schema is in place but the heavy lifting
-(Twilio number allocation, Render env-var sync, etc.) is added in
-Phase 2 per the UI Maturity Model.
+Reads a YAML config describing a new client and creates the matching clients +
+client_configs rows. Shares the SAME create path as the admin "promote" action
+(app.services.provisioning.provision_client) so there is exactly one place that
+writes a tenant — the CLI and the UI can never drift.
+
+Stub scope unchanged from Phase 0: the heavy lifting (Twilio number allocation,
+webhook signing-secret generation, Render env-var sync) is still Phase 2 and
+lives in provisioning.py when it lands.
 
 Usage:
     python scripts/onboard_client.py path/to/client.yaml
@@ -13,14 +16,12 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 from pathlib import Path
-from uuid import uuid4
-
-import asyncpg
 
 from app.config import get_settings
+from app.db import close_pool, init_pool
+from app.services.provisioning import ProvisionSpec, SlugConflictError, provision_client
 
 
 async def provision(config_path: Path) -> None:
@@ -31,51 +32,31 @@ async def provision(config_path: Path) -> None:
         sys.exit(1)
 
     with config_path.open() as fh:
-        cfg = yaml.safe_load(fh)
+        cfg = yaml.safe_load(fh) or {}
 
-    settings = get_settings()
-    if not settings.supabase_db_url:
+    if not get_settings().supabase_db_url:
         print("SUPABASE_DB_URL not set in environment.", file=sys.stderr)
         sys.exit(1)
 
-    client_id = uuid4()
-    conn = await asyncpg.connect(settings.supabase_db_url)
+    # Keep only recognized fields — a stray YAML key is ignored here rather than
+    # rejected, since ProvisionSpec(extra="forbid") would otherwise hard-fail.
+    known = {k: v for k, v in cfg.items() if k in ProvisionSpec.model_fields}
     try:
-        async with conn.transaction():
-            await conn.execute(
-                """
-                INSERT INTO clients (id, slug, business_name, tier, timezone)
-                VALUES ($1, $2, $3, $4, $5)
-                """,
-                client_id,
-                cfg["slug"],
-                cfg["business_name"],
-                cfg.get("tier", "standard"),
-                cfg.get("timezone", "America/Los_Angeles"),
-            )
-            await conn.execute(
-                """
-                INSERT INTO client_configs (
-                    client_id,
-                    business_hours,
-                    service_area_zips,
-                    crm_provider,
-                    brand,
-                    notification_emails
-                ) VALUES ($1, $2::jsonb, $3, $4, $5::jsonb, $6)
-                """,
-                client_id,
-                json.dumps(cfg.get("business_hours") or {}),
-                cfg.get("service_area_zips") or [],
-                cfg.get("crm_provider"),
-                json.dumps(cfg.get("brand") or {}),
-                cfg.get("notification_emails") or [],
-            )
+        spec = ProvisionSpec(**known)
+    except Exception as e:  # pydantic ValidationError → readable CLI error
+        print(f"Invalid client config: {e}", file=sys.stderr)
+        sys.exit(1)
 
-        print(f"client provisioned: id={client_id} slug={cfg['slug']}")
-
+    await init_pool()
+    try:
+        client_id = await provision_client(spec)
+    except SlugConflictError:
+        print(f"A client with slug '{spec.slug}' already exists.", file=sys.stderr)
+        sys.exit(1)
     finally:
-        await conn.close()
+        await close_pool()
+
+    print(f"client provisioned: id={client_id} slug={spec.slug}")
 
 
 if __name__ == "__main__":

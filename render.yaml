@@ -97,6 +97,12 @@ envVarGroups:
         sync: false
       - key: ALLOWED_ORIGINS
         sync: false
+      # Host allow-list for TrustedHostMiddleware. Leave unset to disable the
+      # check; set to e.g. "app.traceflow.app,*.onrender.com" before serving on
+      # the custom domain. (Include the onrender host so Render health checks
+      # and the fallback URL keep working.)
+      - key: ALLOWED_HOSTS
+        sync: false
       - key: SENTRY_DSN
         sync: false
       - key: BASE_URL

@@ -21,7 +21,7 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.lead import LeadOutcome, OutcomeSource
 from app.models.qualification import QualificationSchema
@@ -117,6 +117,14 @@ class ClientConfigAdminOut(BaseModel):
     qualification_schema: dict[str, Any]
     existing_customer_template: str | None
     vendor_ack_template: str | None
+    # Qualification closings (migration 025). Defaulted so demo/synthetic rows
+    # without the columns still serialize.
+    handoff_template: str | None = None
+    decline_template: str | None = None
+    # Structured onboarding identity + logistics (migration 023). Defaulted so
+    # older/synthetic rows (demo fixtures) without the column still serialize;
+    # the real DB column is NOT NULL DEFAULT '{}'.
+    business_profile: dict[str, Any] = Field(default_factory=dict)
     # secrets, redacted to presence/keys
     has_crm_credentials: bool
     webhook_integrations: list[str]
@@ -161,6 +169,8 @@ class ClientConfigUpdate(BaseModel):
     qualification_schema: QualificationSchema | None = None
     existing_customer_template: str | None = None
     vendor_ack_template: str | None = None
+    handoff_template: str | None = None
+    decline_template: str | None = None
 
 
 # ===========================================================================

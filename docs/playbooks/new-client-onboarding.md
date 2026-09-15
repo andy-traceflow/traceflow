@@ -53,15 +53,30 @@ If they're still stuck at Day 5, schedule a call and fill it out together. Don't
 
 ## Days 3-5 — Tenant provisioning
 
-When the form is complete:
+When the form is complete. Two routes, **same code path** — both call
+`services/provisioning.provision_client`, so they can't drift (ADR-0006).
 
-- [ ] Export form responses → populate `client_configs/<slug>.yaml`
-- [ ] Run `./scripts/onboard-client.py --config client_configs/<slug>.yaml`
-- [ ] Verify outputs:
-  - [ ] `client_id` UUID assigned
-  - [ ] Twilio number allocated
-  - [ ] Webhook signing secrets generated
-  - [ ] Default prompt templates loaded
+**Preferred — promote from the admin UI:**
+
+- [ ] `/admin` → **Onboarding** tab → open the submission
+- [ ] Review the `mapped_config` draft against the raw submission; edit if needed, Save
+- [ ] **Promote** → creates the `clients` + `client_configs` rows atomically and flips the submission to `promoted`
+
+Nothing auto-provisions: a submission only becomes a tenant when you promote it.
+Re-promoting is a 409, so a double-click can't create a duplicate client.
+
+**Alternative — CLI**, when you're provisioning outside the intake flow:
+
+- [ ] Populate `client_configs/<slug>.yaml`
+- [ ] `python scripts/onboard_client.py client_configs/<slug>.yaml`
+
+Then verify, either route:
+
+- [ ] `client_id` UUID assigned
+- [ ] ⚠️ Twilio number allocated — **still manual**; the provisioner does not do this yet
+- [ ] ⚠️ Webhook signing secrets generated — **still manual**
+- [ ] ⚠️ Default prompt templates loaded — the `qualification_schema` seed applies; per-client copy (greeting, closings) is manual
+- [ ] Business identity that has no typed column (address, DBA, website, GBP, owner/PoC contacts, tech inventory, logistics) landed in `client_configs.business_profile`
 - [ ] Initiate secure credential exchange with client (1Password share or Bitwarden Send):
   - [ ] Send them: their webhook signing secrets (so they can configure their CRM)
   - [ ] Request from them: CRM API credentials, Shopify token if applicable
@@ -252,7 +267,7 @@ For Module E (Internal Knowledge Base):
 - [ ] Verify adapter is called correctly
 - [ ] Verify all field mappings applied (custom fields included)
 - [ ] Verify the lead appears in client's CRM with all data
-- [ ] Verify `lead.external_id` and `lead.pushed_to_crm_at` populated
+- [ ] Verify `lead.crm_external_id` and `lead.pushed_to_crm_at` populated (`external_id` stays the source-system id)
 
 ### AI qualification
 - [ ] Send 5 sample inbound responses simulating a real lead

@@ -19,6 +19,8 @@ type Draft = Partial<{
   qualification_prompt: string | null;
   existing_customer_template: string | null;
   vendor_ack_template: string | null;
+  handoff_template: string | null;
+  decline_template: string | null;
   vip_keywords: string[];
   vip_value_threshold: number | null;
   service_area_zips: string[];
@@ -170,6 +172,28 @@ export default function ConfigPanel({ clientId }: { clientId: string }) {
               rows={2}
               value={(val("vendor_ack_template") as string | null) ?? ""}
               onChange={(e) => set("vendor_ack_template", e.target.value || null)}
+              className="w-full rounded border border-border bg-surface px-3 py-2.5 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+            />
+          </Field>
+          <Field
+            label="Handoff closing"
+            hint="sent when qualification finishes — must tell the caller a real person will follow up; blank = default. Use {business_name}"
+          >
+            <textarea
+              rows={2}
+              value={(val("handoff_template") as string | null) ?? ""}
+              onChange={(e) => set("handoff_template", e.target.value || null)}
+              className="w-full rounded border border-border bg-surface px-3 py-2.5 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
+            />
+          </Field>
+          <Field
+            label="Decline closing"
+            hint="sent when a hard gate disqualifies the lead — should NOT promise a callback; blank = default. Use {business_name}"
+          >
+            <textarea
+              rows={2}
+              value={(val("decline_template") as string | null) ?? ""}
+              onChange={(e) => set("decline_template", e.target.value || null)}
               className="w-full rounded border border-border bg-surface px-3 py-2.5 font-mono text-sm outline-none focus:border-signal focus-visible:ring-2 focus-visible:ring-signal/70"
             />
           </Field>

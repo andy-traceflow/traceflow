@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     # Security
     admin_jwt_secret: str = ""
     allowed_origins: str = ""
+    # Host allow-list for TrustedHostMiddleware. Comma-separated; supports
+    # wildcards (e.g. "*.onrender.com"). Empty (default) disables the check —
+    # so existing deploys are unaffected until this is set. When set, localhost
+    # + testserver are always appended for dev/tests. Set it before exposing the
+    # app on app.traceflow.app.
+    allowed_hosts: str = ""
     # Admin /login failure rate limiting. Default on; set
     # ADMIN_LOGIN_RATE_LIMIT_ENABLED=false to disable (e.g. during live
     # testing when repeated logins would otherwise trip the lockout).
@@ -55,6 +61,18 @@ class Settings(BaseSettings):
     @property
     def allowed_origins_list(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
+
+    @property
+    def allowed_hosts_list(self) -> list[str]:
+        """Configured hosts + always-on dev/test hosts. Empty when unset →
+        caller skips TrustedHostMiddleware entirely."""
+        hosts = [h.strip() for h in self.allowed_hosts.split(",") if h.strip()]
+        if not hosts:
+            return []
+        for local in ("localhost", "127.0.0.1", "testserver"):
+            if local not in hosts:
+                hosts.append(local)
+        return hosts
 
     @property
     def is_production(self) -> bool:

@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from jwt.algorithms import get_default_algorithms
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import Response
 from starlette.types import Scope
 
@@ -63,6 +64,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Reject requests with an unexpected Host header before they reach any handler.
+# Opt-in: only active when ALLOWED_HOSTS is set, so existing deploys are
+# unaffected until the app is exposed on its own domain (app.traceflow.app).
+# Set it to e.g. "app.traceflow.app,*.onrender.com" for the current setup.
+if _settings.allowed_hosts_list:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_settings.allowed_hosts_list)
 
 app.middleware("http")(tenant_resolver_middleware)
 

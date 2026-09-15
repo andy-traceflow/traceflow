@@ -28,7 +28,8 @@ See [`CLAUDE.md`](../CLAUDE.md) for the operating principles. This file covers t
 │  /webhooks/crm/{provider}/{client_id}                           │
 │  /webhooks/generic/{client_id}/{slug}                           │
 │  /api/admin/* (internal)                                        │
-│  /api/portal/* (client-facing, Phase 3+)                        │
+│  /api/portal/* (client-facing, Phase 3+ — auth keystone built,  │
+│                 ADR-0006; no routes mounted yet)                │
 └────────────────────────────────────────────────────────────────┘
                               ↓
 ┌────────────────────────────────────────────────────────────────┐
@@ -173,7 +174,8 @@ The internal representation every component agrees on. All adapters translate to
 class Lead(BaseModel):
     id: UUID
     client_id: UUID
-    external_id: str | None         # ID in client's CRM after push
+    external_id: str | None         # source-system id (Twilio CallSid, Shopify order id, ...)
+    crm_external_id: str | None     # ID in client's CRM after push (migration 026)
     source_system: str              # 'twilio_missed_call', 'shopify', 'website_form', 'manual', etc.
     
     contact_name: str | None
@@ -368,7 +370,8 @@ create table client_configs (
 create table leads (
   id uuid primary key default gen_random_uuid(),
   client_id uuid not null references clients(id) on delete cascade,
-  external_id text,
+  external_id text,                          -- source-system id (CallSid, order id, ...)
+  crm_external_id text,                      -- CRM record id after push (migration 026)
   source_system text not null,
   contact_name text,
   phone text,
@@ -473,6 +476,46 @@ canonical captured fields), `value_score` (deterministic, never blended with the
 repurposed completeness `qualification_score`), and conversation-activity
 timestamps. See ADR-0005 for the full rationale.
 
+### Portal foundation + onboarding intake (migrations 022–025, ADR-0006)
+
+**Two identity pools, still separate.** ADR-0004 split platform admins
+(`admin_users`, bcrypt + HS256, `/api/admin`) from the client-portal user pool
+(Supabase Auth + `user_permissions`). The portal half was scaffolding until
+`middleware/portal_auth.py` added the missing keystone: `portal_principal`
+verifies the Supabase JWT, resolves the caller's **active tenant** from
+`user_permissions`, sets `app.current_client_id`, and clears it on the way out.
+The membership lookup **bypasses RLS by necessity** — it is the query that
+decides the tenant scope, so it cannot itself be tenant-scoped — and is filtered
+explicitly by `user_id`. A user in several tenants must name one via
+`X-Client-Id`, validated against their memberships. No `/api/portal/*` routes are
+mounted yet; the dependency is the whole surface.
+
+**`onboarding_submissions`** (022) is the one table that is deliberately **not**
+tenant-scoped: it holds pre-tenant data (a submission exists before any
+`client_id` does). It is service-role-locked like `admin_users` — RLS enabled +
+FORCED with **zero policies**, i.e. deny-all under `authenticated` — and reachable
+only through the authenticated admin surface. A submission becomes a tenant only
+via an explicit founder promote; nothing auto-provisions.
+
+**One create-client path.** `services/provisioning.provision_client` is the only
+code that writes the `clients` + `client_configs` pair — the admin promote action
+and the CLI both call it. `provision_portal_user` creates the Supabase Auth user
+and grants `user_permissions.is_admin` for the tenant.
+
+New `client_configs` columns: **`business_profile`** (023) — one JSONB block for
+the onboarding fields with no first-class column (address, DBA, website, GBP,
+structured owner/PoC contacts, tech inventory, logistics), rather than ~15 sparse
+typed ones; and **`handoff_template` / `decline_template`** (025) — the
+deterministic conversation closings. `leads.notes` gains `DEFAULT ''` with a
+backfill (024): the column was nullable while the model required a string, which
+500'd every inbound SMS reply.
+
+**Closings follow termination.** `should_terminate` owns when a conversation
+ends (ADR-0005), so `prompts/greeting.render_handoff` / `render_decline` now own
+how it ends — replacing the model's terminal-turn text. A real lead is told a
+person will follow up; a hard-gated lead gets a decline that deliberately does
+*not* promise a callback.
+
 ---
 
 ## Configuration vs customization in practice
@@ -495,12 +538,12 @@ The pattern is always: **what variability exists across clients in this dimensio
 
 Premature complexity kills momentum. The following are explicitly deferred:
 
-- **Client-facing UI** — until Client 8 minimum. Email digests + Loom walkthroughs suffice in Phase 0–1.
+- **Client-facing UI** — until Client 8 minimum. Email digests + Loom walkthroughs suffice in Phase 0–1. **Still deferred as of 2026-07-22**, but the backend it will sit on now exists (ADR-0006): tenant resolution from a Supabase principal, tenant-admin provisioning, and a create-client path. The `/manage` SPA and the native onboarding form remain unbuilt on purpose — this is so they become UI-on-top work rather than a re-architecture.
 - ~~**Internal admin UI** — until Client 3 and you've felt the SQL pain. Then Retool, not custom.~~ **Built 2026-06-10, self-hosted instead of Retool (ADR-0004):** `/api/admin/*` + a thin React SPA at `/admin`, inside the existing service. Auth = `admin_users` (bcrypt) → 12h HS256 JWT via `POST /api/admin/login`; every route gated by `require_admin_user`; every write audit-logged with the admin's email. Admin queries use the service-role connection (BYPASSRLS) — isolation there is the **explicit `client_id` filter from the URL path in every statement**, enforced by tests, never by RLS. Secrets (`crm_credentials`, webhook signing) are read-redacted and not writable from the UI.
 - **Multi-region deployment** — until performance demands it (you won't hit this in Year 1).
 - **Microservices** — never speak of this.
 - **Custom email infrastructure** — Resend or Postmark covers it.
-- **Self-serve onboarding** — Phase 4 strategic decision; not now.
+- **Self-serve onboarding** — Phase 4 strategic decision; not now. Intake is **staged, then promoted** (ADR-0006): a submission lands in `onboarding_submissions` and only becomes a tenant when the founder promotes it. Auto-provisioning on submit was rejected — a bad submission would mutate live tenant data with no review gate.
 - **Mobile apps** — clients don't need them; ops happens via web/email/SMS.
 
 When in doubt, refer to the UI Maturity Model in PRD §11.

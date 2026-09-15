@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, isDemo, type AdminMe, type ClientItem } from "./api";
 import { CLIENT_STATUS_LABELS, CLIENT_TIER_LABELS, labelFor } from "./labels";
 import ConfigPanel from "./panels/ConfigPanel";
@@ -6,8 +6,9 @@ import LeadsPanel from "./panels/LeadsPanel";
 import ActivityPanel from "./panels/ActivityPanel";
 import MappingsPanel from "./panels/MappingsPanel";
 import UsageCard from "./panels/UsageCard";
+import OnboardingPanel from "./panels/OnboardingPanel";
 
-const TABS = ["Leads", "Activity", "Config", "Mappings", "Usage"] as const;
+const TABS = ["Leads", "Activity", "Config", "Mappings", "Usage", "Onboarding"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => void }) {
@@ -16,7 +17,7 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
   const [tab, setTab] = useState<Tab>("Leads");
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadClients = useCallback(() => {
     api<ClientItem[]>("/clients")
       .then((list) => {
         setClients(list);
@@ -24,6 +25,10 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
       })
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load clients"));
   }, []);
+
+  useEffect(() => {
+    loadClients();
+  }, [loadClients]);
 
   const selected = clients.find((c) => c.id === clientId) ?? null;
 
@@ -119,19 +124,25 @@ export default function Shell({ me, onLogout }: { me: AdminMe; onLogout: () => v
         </p>
       )}
 
-      {!clientId ? (
-        <p className="py-12 text-center text-sm text-zinc-400">
-          No clients yet. Add a client to get started.
-        </p>
-      ) : (
-        <main id="tabpanel" role="tabpanel" aria-labelledby={`tab-${tab}`}>
-          {tab === "Leads" && <LeadsPanel clientId={clientId} />}
-          {tab === "Activity" && <ActivityPanel clientId={clientId} />}
-          {tab === "Config" && <ConfigPanel clientId={clientId} />}
-          {tab === "Mappings" && <MappingsPanel clientId={clientId} />}
-          {tab === "Usage" && <UsageCard clientId={clientId} />}
-        </main>
-      )}
+      <main id="tabpanel" role="tabpanel" aria-labelledby={`tab-${tab}`}>
+        {/* Onboarding is pre-tenant — it works (and matters most) when there
+            are no clients yet, so it renders outside the client gate. */}
+        {tab === "Onboarding" ? (
+          <OnboardingPanel onPromoted={loadClients} />
+        ) : !clientId ? (
+          <p className="py-12 text-center text-sm text-zinc-400">
+            No clients yet — head to Onboarding to promote your first submission.
+          </p>
+        ) : (
+          <>
+            {tab === "Leads" && <LeadsPanel clientId={clientId} />}
+            {tab === "Activity" && <ActivityPanel clientId={clientId} />}
+            {tab === "Config" && <ConfigPanel clientId={clientId} />}
+            {tab === "Mappings" && <MappingsPanel clientId={clientId} />}
+            {tab === "Usage" && <UsageCard clientId={clientId} />}
+          </>
+        )}
+      </main>
     </div>
   );
 }

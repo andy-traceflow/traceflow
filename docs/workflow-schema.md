@@ -334,14 +334,16 @@ stages:
       - Look up field mappings
       - Translate canonical Lead → client CRM payload
       - Push via adapter.push_lead()
-      - Update lead.external_id and pushed_to_crm_at; record a crm_pushed event
+      - Update lead.crm_external_id and pushed_to_crm_at; record a crm_pushed event
+        (crm_external_id, not external_id — the latter holds the source id, e.g. a
+        CallSid on missed-call leads; migration 026)
     degradation:
-      - Idempotent: a lead that already has an external_id is never re-pushed (no
+      - Idempotent: a lead that already has a crm_external_id is never re-pushed (no
         duplicate CRM record). A push failure records a crm_push_failed event and
         leaves the lead untouched for manual re-push (POST /api/admin/leads/{id}/repush);
         it never raises into the leads pipeline.
     outputs: [synced_lead]
-    exit_criteria: external_id populated
+    exit_criteria: crm_external_id populated
     duration_target: <5 seconds
 
   - id: owner_alert                    # conditional

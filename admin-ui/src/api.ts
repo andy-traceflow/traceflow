@@ -200,6 +200,9 @@ export interface ClientConfig {
   qualification_schema: QualificationSchema;
   existing_customer_template: string | null;
   vendor_ack_template: string | null;
+  /** Qualification closings (migration 025). Null → server-side default. */
+  handoff_template: string | null;
+  decline_template: string | null;
   has_crm_credentials: boolean;
   webhook_integrations: string[];
   updated_at: string;
@@ -283,4 +286,27 @@ export interface AIUsage {
   remaining: number;
   percent_used: number;
   resets_at: string;
+}
+
+/** Onboarding staging (migration 022) — pre-tenant, not client-scoped. */
+export interface OnboardingListItem {
+  id: string;
+  status: "new" | "reviewed" | "promoted" | "rejected";
+  source: "jotform" | "native";
+  business_name: string | null;
+  contact_email: string | null;
+  promoted_client_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OnboardingDetail extends OnboardingListItem {
+  raw_payload: Record<string, unknown>;
+  mapped_config: Record<string, unknown>;
+  notes: string | null;
+}
+
+export interface PromoteResult {
+  submission_id: string;
+  client_id: string;
 }
