@@ -98,11 +98,15 @@ async def test_failed_delivery_stays_retryable_and_redelivery_is_absorbed(store)
 async def test_expired_lease_is_reclaimed(store):
     await _insert(store, "wh-lease")
     (event,) = await store.claim(limit=1, lease_seconds=0)
-    assert await store.claim(limit=1, lease_seconds=60) != []  # 0s lease already expired
+    assert event.status == EventStatus.PROCESSING
 
-    # A live lease is respected.
-    (again,) = await store.claim(limit=1, lease_seconds=0)
-    assert again.id == event.id
+    # A 0-second lease is already expired → the row is reclaimable immediately.
+    (reclaimed,) = await store.claim(limit=1, lease_seconds=60)
+    assert reclaimed.id == event.id
+    assert reclaimed.status == EventStatus.PROCESSING
+
+    # It now holds a live 60-second lease → a third worker must NOT get it.
+    assert await store.claim(limit=1, lease_seconds=60) == []
 
 
 async def test_terminal_states_are_never_claimed(store):
