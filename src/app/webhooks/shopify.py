@@ -2,29 +2,34 @@
 
 Path: POST /webhooks/shopify/{topic:path}
 
-Target shape (Phase 3c): verify HMAC → insert one row into `events` →
-return 200. No transformation, no destination call — the worker does
-that from the events table.
+The handler does exactly three things: verify → persist → 200.
+  1. `verify_shopify_signature` (a dependency) checks the HMAC and fails closed.
+  2. One row is inserted into `events`. `ON CONFLICT (source, webhook_id)
+     DO NOTHING` absorbs Shopify redeliveries.
+  3. 200. Shopify's 5-second budget is never at risk because nothing
+     downstream runs here — the worker reads the row later.
 
-Current state (Phase 2): verify → acknowledge. The HMAC dependency runs
-before the handler body and fails closed. Unparseable JSON is acknowledged
-with a 200 so Shopify stops retrying a body that will never parse. Durable
-persistence lands in Phase 3c — until then nothing is stored.
+If the insert fails, the handler returns 503 rather than 200: durable
+first. Shopify retries non-2xx for ~48 hours, so the event is not lost.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
+from app.services.events import EventStore, get_event_store
 from app.services.webhook_signature import verify_shopify_signature
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks/shopify", tags=["webhooks"])
+
+SOURCE = "shopify"
 
 
 @router.post("/{topic:path}")
@@ -32,23 +37,62 @@ async def shopify_webhook(
     topic: str,
     request: Request,
     body: bytes = Depends(verify_shopify_signature),
+    store: EventStore = Depends(get_event_store),
 ) -> Response:
-    # `body` is the exact bytes the dependency verified (also cached on
-    # request.state._cached_body). Never re-read the stream here.
+    # `body` is the exact bytes the dependency verified. Never re-read the stream.
     try:
         payload = json.loads(body)
     except json.JSONDecodeError:
-        # Acknowledge to Shopify so it doesn't retry an unparseable body.
+        # Acknowledge so Shopify stops retrying a body that will never parse.
         logger.warning("shopify webhook: invalid JSON body", extra={"topic": topic})
         return Response(status_code=200, content="ok")
 
-    webhook_id = request.headers.get("X-Shopify-Webhook-Id", "")
+    webhook_id = request.headers.get("X-Shopify-Webhook-Id", "").strip()
+    if not webhook_id:
+        # Shopify always sends one. A request without it still passed HMAC,
+        # so it came from someone holding the secret (e.g. a manual replay).
+        # Derive a deterministic id from the body so it is deduplicated
+        # rather than dropped or double-stored.
+        webhook_id = "sha256:" + hashlib.sha256(body).hexdigest()
+        logger.warning(
+            "shopify webhook: missing X-Shopify-Webhook-Id, using body hash",
+            extra={"topic": topic, "webhook_id": webhook_id},
+        )
+
+    # Shopify's header is authoritative; the path segment is the fallback.
+    event_topic = request.headers.get("X-Shopify-Topic", "").strip() or topic
+    shop_domain = request.headers.get("X-Shopify-Shop-Domain", "").strip() or None
+
+    try:
+        event_id = await store.insert(
+            source=SOURCE,
+            topic=event_topic,
+            webhook_id=webhook_id,
+            shop_domain=shop_domain,
+            payload=payload,
+        )
+    except Exception:
+        logger.exception(
+            "shopify webhook: event store insert failed — NOT acknowledging",
+            extra={"topic": event_topic, "webhook_id": webhook_id},
+        )
+        raise HTTPException(status_code=503, detail="event store unavailable") from None
+
+    if event_id is None:
+        logger.info(
+            "shopify webhook: duplicate absorbed",
+            extra={"topic": event_topic, "webhook_id": webhook_id},
+        )
+        return Response(status_code=200, content="ok")
+
     logger.info(
-        "shopify webhook accepted (verified; persistence lands in Phase 3c)",
+        "event received",
         extra={
-            "topic": topic,
+            "event_id": str(event_id),
             "webhook_id": webhook_id,
-            "order_id": str(payload.get("id")) if isinstance(payload, dict) else None,
+            "topic": event_topic,
+            "shop_domain": shop_domain,
+            "status": "received",
         },
     )
     return Response(status_code=200, content="ok")

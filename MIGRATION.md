@@ -126,3 +126,37 @@ was rewritten.
 - Full `pytest` still has the 2 intentional adapter collection errors (Phase 4).
 - The webhook route is now safe to expose: HMAC is enforced with no bypass. Still **not
   deployable** as a product — nothing is persisted until Phase 3c.
+
+---
+
+## Phase 3 — Replace the event pipeline
+
+Durable first, process second. The handler's only job is verify → insert → 200; the worker
+reads from the `events` table. Nothing runs in a `BackgroundTask` anymore.
+
+| Op | Path | Reason |
+|---|---|---|
+| + | `migrations/001_create_events.sql` | The durable event store, per the Phase 3a schema plus one column: `shop_domain` (the spec asks to capture `X-Shopify-Shop-Domain` into the row and the given DDL had nowhere to put it). Adds a `CHECK` on `status`. Documents the dual meaning of `next_retry_at` (backoff when `received`, claim lease when `processing`). Wrapped in `BEGIN/COMMIT` as `scripts/apply_migrations.py` expects |
+| D | `src/app/services/dedupe.py`, `tests/test_dedupe.py` | In-memory, per-process, TTL-based; wiped by restarts; and recorded the id *before* processing so a crash mid-process suppressed Shopify's retry forever. Replaced by `INSERT … ON CONFLICT (source, webhook_id) DO NOTHING RETURNING id` |
+| + | `src/app/models/event.py` | `Event` (Pydantic) + `EventStatus` — the one persisted shape |
+| + | `src/app/services/events.py` | `EventStore` Protocol + `PostgresEventStore`. All `events` SQL lives here. `claim()` is one `UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING *` and takes a lease. Injected into the route via `Depends(get_event_store)` so tests override it |
+| R | `src/app/webhooks/shopify.py` | Handler is exactly verify → `store.insert()` → 200. Captures `X-Shopify-Webhook-Id`, `X-Shopify-Topic` (authoritative; path segment is the fallback), `X-Shopify-Shop-Domain`. Duplicate → 200. **Insert failure → 503, not 200** — if the row cannot be written, Shopify must retry. A missing webhook id (never from real Shopify, but the request passed HMAC) falls back to `sha256:<body>` so it still dedupes. `_resolve_*` helpers unchanged |
+| + | `src/app/pipeline.py` | `Pipeline(transform, deliver)` + the failure vocabulary adapters raise: `PermanentDeliveryError`, `TransientDeliveryError`, `TransformError`. `passthrough` transform. `build_pipeline()` raises until Phase 4 (registry) and Phase 5 (mapping) exist |
+| + | `src/app/worker.py` | The delivery worker. `backoff_seconds()` 1m/5m/15m/1h/6h ±20% jitter; `classify_failure()` — 4xx (except 408/429), `ValueError`/Pydantic `ValidationError`, transform errors → permanent → straight to `dead`; 5xx/408/429/timeouts/transport errors/unknown → transient; 5th transient failure → `dead` + alert. `process_one()` never raises for delivery failures. `run_once()` drains the due set; `run_forever()` polls. CLI: `python -m app.worker` / `--once` / `--batch-size` / `--poll-interval`. Calls `require_startup_settings()` (fail closed on missing DB URL). Default alert sink is an ERROR log line — Phase 6 swaps in the Slack poster. Log lines already carry `event_id`, `webhook_id`, `status`, `attempts`, `duration_ms`; Phase 6 switches the formatter to JSON |
+| E | `src/app/config.py` | `supabase_db_url` added to `REQUIRED_AT_STARTUP` (approved). A boot without a DB would 200 webhooks and persist nothing |
+| E | `render.yaml` | Added `sia-kit-worker` as a Render background worker, with the cron `--once` alternative shown commented for cheap deployments |
+| + | `tests/fakes.py` | `InMemoryEventStore` mirroring the Postgres semantics (dedupe, due set, lease) so worker/handler tests need no DB |
+| + | `tests/test_shopify_webhook.py` | 8 handler tests: row captured with headers, same webhook id ×3 → one row, header topic beats path, path fallback, missing webhook id → body hash still dedupes, bad JSON → 200 and nothing stored, **store failure → 503**, bad signature never reaches the store |
+| + | `tests/test_worker.py` | 25 tests: backoff schedule/jitter bounds/clamp, 16-case classification matrix, delivered path, transient → retry scheduled (the regression), not claimable until backoff elapses, redelivery absorbed while original stays retryable, permanent 4xx → dead with one alert and `attempts == 1`, transform error permanent, 5 transient → exactly one dead row + one alert, alert failure contained, lease reclaim, `run_once` drains and terminates |
+| + | `tests/test_events_store_db.py` | 6 Postgres-backed tests (skip without `TRACEFLOW_TEST_DB_URL`; CI runs them): unique constraint, JSONB round-trip, two concurrent `claim()`s are disjoint and cover the set (`FOR UPDATE SKIP LOCKED`), failed delivery stays retryable + redelivery absorbed, lease expiry, terminal states never claimed |
+| E | `tests/test_shopify_signature_dependency.py` | Fixture now also sets a dummy `SUPABASE_DB_URL` (newly required) and overrides the store with the in-memory fake, since accepted requests now persist |
+
+### Phase 3 result
+- `ruff check .` → clean. `python -m app.worker --help` → OK.
+- `pytest tests/ -q --ignore=tests/adapters` → **76 passed, 6 skipped, 1.06s.** The 6 skips are
+  `tests/test_events_store_db.py` (no `TRACEFLOW_TEST_DB_URL` on this machine — no local Postgres
+  or Docker). CI applies `migrations/001_create_events.sql` and runs them.
+- Full `pytest` still has the 2 intentional adapter collection errors (Phase 4).
+- The receive side is now durable and deployable. The worker runs but `build_pipeline()` raises
+  until Phase 4 supplies a destination — so at this commit events accumulate as `received` and
+  nothing is delivered. That is the correct failure mode: nothing is lost.

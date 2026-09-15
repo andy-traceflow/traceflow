@@ -16,6 +16,8 @@ from fastapi.testclient import TestClient
 
 from app.config import get_settings, require_startup_settings
 from app.main import app
+from app.services.events import get_event_store
+from tests.fakes import InMemoryEventStore
 
 SECRET = "shpss_test_secret_do_not_use"
 BODY = b'{"id": 820982911946154508, "email": "jon@example.com", "total_price": "254.98"}'
@@ -31,8 +33,12 @@ def _sign(secret: str, body: bytes) -> str:
 def _configured_secret(monkeypatch: pytest.MonkeyPatch):
     """Every test starts with the secret configured; individual tests remove it."""
     monkeypatch.setenv("SHOPIFY_WEBHOOK_SECRET", SECRET)
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://unused")
     get_settings.cache_clear()
+    # Accepted requests go on to persist; give them an in-memory store.
+    app.dependency_overrides[get_event_store] = InMemoryEventStore
     yield
+    app.dependency_overrides.pop(get_event_store, None)
     get_settings.cache_clear()
 
 

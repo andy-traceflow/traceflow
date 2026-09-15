@@ -14,8 +14,40 @@ services:
         value: "3.12"
       - fromGroup: sia-kit-secrets
 
-  # Phase 3d adds the delivery worker here (background worker, or a cron
-  # running `python -m app.worker --once` for cheap deployments).
+  # Delivery worker — reads the events table, transforms, pushes to the
+  # destination, retries with backoff. Pick ONE of the two shapes:
+  #
+  # (a) always-on background worker: lowest delivery latency, second
+  #     paid service.
+  - type: worker
+    name: sia-kit-worker
+    runtime: python
+    plan: starter
+    region: oregon
+    buildCommand: pip install -e .
+    startCommand: python -m app.worker
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: PYTHON_VERSION
+        value: "3.12"
+      - fromGroup: sia-kit-secrets
+  #
+  # (b) cron that drains the queue every few minutes: near-free, adds up
+  #     to one interval of latency. Delete the worker block above and
+  #     uncomment this one.
+  # - type: cron
+  #   name: sia-kit-worker
+  #   runtime: python
+  #   schedule: "*/5 * * * *"
+  #   buildCommand: pip install -e .
+  #   startCommand: python -m app.worker --once
+  #   envVars:
+  #     - key: ENVIRONMENT
+  #       value: production
+  #     - key: PYTHON_VERSION
+  #       value: "3.12"
+  #     - fromGroup: sia-kit-secrets
 
 envVarGroups:
   - name: sia-kit-secrets

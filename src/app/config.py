@@ -20,7 +20,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     base_url: str = "http://localhost:8000"
 
-    # Database — direct Postgres DSN for the asyncpg pool
+    # Database — direct Postgres DSN for the asyncpg pool. REQUIRED: without
+    # it the webhook would 200 and persist nothing, which is the exact
+    # failure this template exists to prevent.
     supabase_db_url: str = ""
 
     # Shopify webhook HMAC secret. Shopify admin → Settings → Notifications →
@@ -61,7 +63,7 @@ def get_settings() -> Settings:
 # Settings whose absence must stop the process, not degrade it. Checked once
 # in the lifespan handler so a misconfigured deploy fails at boot — never on
 # the first webhook, and never by silently skipping a check.
-REQUIRED_AT_STARTUP: tuple[str, ...] = ("shopify_webhook_secret",)
+REQUIRED_AT_STARTUP: tuple[str, ...] = ("shopify_webhook_secret", "supabase_db_url")
 
 
 def require_startup_settings(settings: Settings | None = None) -> None:
