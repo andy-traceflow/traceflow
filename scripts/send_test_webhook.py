@@ -59,7 +59,8 @@ def main() -> int:
         },
         timeout=15.0,
     )
-    print(f"POST {url}\n  webhook_id: {webhook_id}\n  → {resp.status_code} {resp.text[:200]}")
+    # ASCII only: Windows consoles default to cp1252 and choke on arrows.
+    print(f"POST {url}\n  webhook_id: {webhook_id}\n  -> {resp.status_code} {resp.text[:200]}")
     return 0 if resp.status_code == 200 else 1
 
 

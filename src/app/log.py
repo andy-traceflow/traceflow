@@ -57,3 +57,8 @@ def configure_logging(level: str = "INFO", fmt: str = "json") -> None:
         uv = logging.getLogger(name)
         uv.handlers[:] = []
         uv.propagate = True
+
+    # httpx logs every outbound request at INFO — one extra line per adapter
+    # call, on top of the event-transition line that already says what happened.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
