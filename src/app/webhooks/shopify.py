@@ -6,10 +6,10 @@ Target shape (Phase 3c): verify HMAC → insert one row into `events` →
 return 200. No transformation, no destination call — the worker does
 that from the events table.
 
-Phase 1 placeholder: reads the cached body, acknowledges unparseable JSON
-with a 200 (so Shopify stops retrying a body that will never parse), and
-returns 200. Signature verification (Phase 2) and durable persistence
-(Phase 3c) are NOT wired yet — this branch is not deployable until then.
+Current state (Phase 2): verify → acknowledge. The HMAC dependency runs
+before the handler body and fails closed. Unparseable JSON is acknowledged
+with a 200 so Shopify stops retrying a body that will never parse. Durable
+persistence lands in Phase 3c — until then nothing is stored.
 """
 
 from __future__ import annotations
@@ -18,7 +18,9 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
+
+from app.services.webhook_signature import verify_shopify_signature
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +28,13 @@ router = APIRouter(prefix="/webhooks/shopify", tags=["webhooks"])
 
 
 @router.post("/{topic:path}")
-async def shopify_webhook(topic: str, request: Request) -> Response:
-    # The signature dependency reads the body once and caches it on
-    # request.state._cached_body — re-reading here is free.
-    body: bytes = getattr(request.state, "_cached_body", b"") or await request.body()
-
+async def shopify_webhook(
+    topic: str,
+    request: Request,
+    body: bytes = Depends(verify_shopify_signature),
+) -> Response:
+    # `body` is the exact bytes the dependency verified (also cached on
+    # request.state._cached_body). Never re-read the stream here.
     try:
         payload = json.loads(body)
     except json.JSONDecodeError:
@@ -40,7 +44,7 @@ async def shopify_webhook(topic: str, request: Request) -> Response:
 
     webhook_id = request.headers.get("X-Shopify-Webhook-Id", "")
     logger.info(
-        "shopify webhook accepted (phase 1 placeholder — not persisted)",
+        "shopify webhook accepted (verified; persistence lands in Phase 3c)",
         extra={
             "topic": topic,
             "webhook_id": webhook_id,

@@ -99,3 +99,30 @@ Legend: **D** deleted · **M** moved · **R** rewritten · **E** edited (minimal
   The suite is red at this commit; it goes green again at the Phase 4 commit.
 - Branch is **not deployable** at this commit: signature verification is unwired until Phase 2, and
   the webhook handler persists nothing until Phase 3c.
+
+---
+
+## Phase 2 — Preserve and harden the signature layer
+
+The three pure verifiers (`verify_hmac_sha256_base64`, `verify_hmac_sha256_hex`,
+`verify_timestamped_signature`) and `parse_signature_header` are **byte-for-byte unchanged**,
+including `hmac.compare_digest` and the injectable `now`. Only the request-level dispatcher
+was rewritten.
+
+| Op | Path | Reason |
+|---|---|---|
+| R | `src/app/services/webhook_signature.py` | Dispatcher `verify_signature_for_request(request, client_id)` → FastAPI dependency `verify_shopify_signature(request) -> bytes`. **Deleted** `_load_signing_secret()` (HTTP round-trip to Supabase REST per webhook), the `ENVIRONMENT`-gated dev bypass, and `_infer_integration()` path sniffing. Secret is `SHOPIFY_WEBHOOK_SECRET` from env. Fail-closed contract: no secret → 500, no header → 401, mismatch → 401 — no environment skips it. Kept `_read_and_cache_body()`; the dependency returns the verified bytes so the handler never re-reads the stream. Dropped `httpx`/`uuid` imports |
+| E | `src/app/middleware/signature_verify.py` | Re-export shim updated to the new surface (`verify_shopify_signature`, `SHOPIFY_HMAC_HEADER`) |
+| E | `src/app/config.py` | Added `shopify_webhook_secret`; added `REQUIRED_AT_STARTUP` + `require_startup_settings()` which raises `RuntimeError` naming every missing fail-closed var |
+| E | `src/app/main.py` | Lifespan calls `require_startup_settings()` first — a deploy without the secret refuses to boot |
+| E | `src/app/webhooks/shopify.py` | Route declares `body: bytes = Depends(verify_shopify_signature)`; the `getattr(request.state, ...)` fallback read is gone (the dependency is the only body reader) |
+| + | `tests/test_shopify_signature_dependency.py` | 12 route/lifespan tests: valid, tampered, wrong secret, missing/empty header, missing secret fails closed per-request and across every `ENVIRONMENT` value, bad-JSON 200 shortcut unreachable without a valid HMAC, startup gate raises and names the var, lifespan refuses to start |
+| E | `.env.example`, `render.yaml` | Added `SHOPIFY_WEBHOOK_SECRET` (marked required). `.env.example` is otherwise still the old file — full rewrite is Phase 6 |
+
+### Phase 2 result
+- `diff` of the four pure-verifier function bodies, Phase-1 commit vs. working tree → **identical**.
+- `ruff check .` → clean.
+- `pytest tests/ -q --ignore=tests/adapters` → **45 passed, 0.91s** (33 carried + 12 new).
+- Full `pytest` still has the 2 intentional adapter collection errors (Phase 4).
+- The webhook route is now safe to expose: HMAC is enforced with no bypass. Still **not
+  deployable** as a product — nothing is persisted until Phase 3c.

@@ -14,7 +14,7 @@ import sentry_sdk
 from fastapi import FastAPI
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from app.config import get_settings
+from app.config import get_settings, require_startup_settings
 from app.db import close_pool, init_pool
 from app.routers import health
 from app.webhooks import shopify
@@ -24,8 +24,11 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Startup: init DB pool + Sentry. Shutdown: close DB pool."""
+    """Startup: validate fail-closed settings, init Sentry + DB pool. Shutdown: close pool."""
     settings = get_settings()
+
+    # Fail closed: a deploy without its webhook signing secret must not come up.
+    require_startup_settings(settings)
 
     if settings.sentry_dsn:
         sentry_sdk.init(

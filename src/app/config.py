@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     # Database — direct Postgres DSN for the asyncpg pool
     supabase_db_url: str = ""
 
+    # Shopify webhook HMAC secret. Shopify admin → Settings → Notifications →
+    # Webhooks → the "signed with" value at the bottom of the page. REQUIRED:
+    # the app refuses to start without it (see require_startup_settings).
+    shopify_webhook_secret: str = ""
+
     # Host allow-list for TrustedHostMiddleware. Comma-separated; supports
     # wildcards (e.g. "*.onrender.com"). Empty (default) disables the check.
     # When set, localhost + testserver are always appended for dev/tests.
@@ -51,3 +56,19 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+# Settings whose absence must stop the process, not degrade it. Checked once
+# in the lifespan handler so a misconfigured deploy fails at boot — never on
+# the first webhook, and never by silently skipping a check.
+REQUIRED_AT_STARTUP: tuple[str, ...] = ("shopify_webhook_secret",)
+
+
+def require_startup_settings(settings: Settings | None = None) -> None:
+    """Raise RuntimeError naming every missing fail-closed setting."""
+    s = settings if settings is not None else get_settings()
+    missing = [name.upper() for name in REQUIRED_AT_STARTUP if not getattr(s, name)]
+    if missing:
+        raise RuntimeError(
+            "refusing to start: missing required environment variables: " + ", ".join(missing)
+        )

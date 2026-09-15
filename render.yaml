@@ -22,6 +22,9 @@ envVarGroups:
     envVars:
       - key: SUPABASE_DB_URL
         sync: false
+      # Required. The service refuses to boot without it (fail closed).
+      - key: SHOPIFY_WEBHOOK_SECRET
+        sync: false
       # Host allow-list for TrustedHostMiddleware. Leave unset to disable the
       # check; set to e.g. "*.onrender.com" so Render health checks keep working.
       - key: ALLOWED_HOSTS
