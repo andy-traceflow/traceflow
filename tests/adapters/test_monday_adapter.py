@@ -1,248 +1,169 @@
-"""Monday adapter tests.
-
-These exercise the pure helpers (item-name formatting, canonical →
-column-values translation, transform application). The GraphQL roundtrip
-is mocked so the suite runs offline and deterministically.
-"""
+"""Monday adapter: column ids resolved by display name, subitems from _line_items,
+_key upsert, GraphQL error classification. All HTTP via MockTransport."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import Any
-from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+import json
 
+import httpx
 import pytest
 
 from app.adapters.monday import MondayAdapter
-from app.models.client_config import ClientConfig
-from app.models.crm_contact import ContactType
-from app.models.lead import Lead, QualificationStatus
-from app.services.field_mappings import FieldMapping
+from app.pipeline import PermanentDeliveryError, TransientDeliveryError
+from tests.adapters.conftest import Recorder, body_of, json_response
+
+PARENT_COLUMNS = [
+    {"id": "name", "title": "Name", "type": "name", "settings_str": "{}"},
+    {"id": "text_1", "title": "Order ID", "type": "text", "settings_str": "{}"},
+    {"id": "numbers_2", "title": "Total", "type": "numbers", "settings_str": "{}"},
+    {"id": "status_3", "title": "Status", "type": "status", "settings_str": "{}"},
+    {"id": "subitems_4", "title": "Subitems", "type": "subtasks", "settings_str": '{"boardIds": [777]}'},
+]
+SUBITEM_COLUMNS = [
+    {"id": "name", "title": "Name", "type": "name", "settings_str": "{}"},
+    {"id": "numbers_9", "title": "Quantity", "type": "numbers", "settings_str": "{}"},
+]
 
 
-def _make_lead(**overrides: Any) -> Lead:
-    base = {
-        "id": uuid4(),
-        "client_id": uuid4(),
-        "external_id": "EXT-100",
-        "source_system": "shopify",
-        "contact_name": "Jane Doe",
-        "contact_company": "Doe Co",
-        "phone": "+15551234567",
-        "email": "jane@example.com",
-        "service_type": "consult",
-        "sqft": 250.0,
-        "raw_payload": {},
-        "qualification_status": QualificationStatus.unqualified,
-        "notes": "",
-        "created_at": datetime.now(UTC),
-        "updated_at": datetime.now(UTC),
-    }
-    base.update(overrides)
-    return Lead(**base)
-
-
-def _make_config(client_id, **overrides: Any) -> ClientConfig:
-    base = {
-        "client_id": client_id,
-        "crm_provider": "monday",
-        "crm_credentials": {"api_key": "fake-key", "board_id": "999"},
-        "ai_period_resets_at": datetime.now(UTC),
-        "updated_at": datetime.now(UTC),
-    }
-    base.update(overrides)
-    return ClientConfig(**base)
-
-
-# ---------------------------------------------------------------------------
-# Item name formatting
-# ---------------------------------------------------------------------------
-
-def test_item_name_with_company():
-    adapter = MondayAdapter()
-    lead = _make_lead(contact_name="Jane Doe", contact_company="Doe Co", external_id="ORD-7")
-    assert adapter._format_item_name(lead) == "Jane Doe / Doe Co / ORD-7"
-
-
-def test_item_name_without_company():
-    adapter = MondayAdapter()
-    lead = _make_lead(contact_name="Jane Doe", contact_company=None, external_id="ORD-7")
-    assert adapter._format_item_name(lead) == "Jane Doe / ORD-7"
-
-
-def test_item_name_with_unknown_contact():
-    adapter = MondayAdapter()
-    lead = _make_lead(contact_name=None, contact_company="Doe Co", external_id="ORD-7")
-    assert adapter._format_item_name(lead) == "Unknown Contact / Doe Co / ORD-7"
-
-
-def test_item_name_falls_back_to_lead_id_prefix():
-    adapter = MondayAdapter()
-    lead = _make_lead(contact_name="Jane Doe", external_id=None, contact_company=None)
-    name = adapter._format_item_name(lead)
-    assert name.startswith("Jane Doe / ")
-    # ref is the first 8 chars of the lead.id
-    assert len(name.split(" / ")[-1]) == 8
-
-
-# ---------------------------------------------------------------------------
-# Canonical → column values
-# ---------------------------------------------------------------------------
-
-def test_build_parent_columns_with_value_map_transform():
-    adapter = MondayAdapter()
-    lead = _make_lead(service_type="consult", sqft=200.0)
-
-    # Discovered columns for two fields — the shape _discover_columns returns
-    discovered = {
-        "parent": {"service_type": "status_col_id", "sqft": "num_col_id"},
-        "subitem": {},
-        "subitem_board_id": None,
-    }
-
-    mappings = {
-        "service_type": FieldMapping(
-            canonical_field="service_type",
-            external_field="Service",
-            external_field_type="column",
-            transform={"type": "value_map", "mapping": {"consult": "Consultation"}},
-        ),
-        "sqft": FieldMapping(
-            canonical_field="sqft",
-            external_field="Square Feet",
-            external_field_type="column",
-            transform=None,
-        ),
-    }
-
-    column_values = adapter._build_parent_columns(lead, mappings, discovered)
-    assert column_values["status_col_id"] == "Consultation"   # transformed
-    assert column_values["num_col_id"] == "200.0"             # str-serialized
-
-
-def test_canonical_dict_includes_all_known_fields():
-    lead = _make_lead()
-    canonical = MondayAdapter._canonical_dict(lead)
-    expected_keys = {
-        "contact_name", "contact_company", "phone", "email", "address",
-        "service_type", "sqft", "budget_range", "timeframe", "notes", "external_id",
-    }
-    assert expected_keys.issubset(canonical.keys())
-
-
-# ---------------------------------------------------------------------------
-# Health check + creds
-# ---------------------------------------------------------------------------
-
-def test_creds_validation_fails_without_required_keys():
-    adapter = MondayAdapter()
-    config = ClientConfig(
-        client_id=uuid4(),
-        crm_credentials={"api_key": "only-the-key"},
-        ai_period_resets_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
-    )
-    with pytest.raises(ValueError, match="board_id"):
-        adapter._creds(config)
-
-
-@pytest.mark.asyncio
-async def test_health_check_returns_false_on_request_error():
-    adapter = MondayAdapter()
-    adapter._request = AsyncMock(side_effect=Exception("network"))  # type: ignore[method-assign]
-    config = _make_config(uuid4())
-    assert await adapter.health_check(config) is False
-
-
-@pytest.mark.asyncio
-async def test_push_lead_returns_external_id():
-    """Mock the HTTP layer; verify the adapter assembles the right call shape."""
-    adapter = MondayAdapter()
-    client_id = uuid4()
-    lead = _make_lead(client_id=client_id, contact_name="Jane Doe", external_id="ORD-7")
-    config = _make_config(client_id)
-
-    # Mock column discovery + GraphQL ops
-    async def fake_request(api_key, query, variables):
+def graphql_handler(*, existing_item_id: str | None = None):
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = body_of(request)
+        query, variables = body["query"], body["variables"]
         if "boards(ids" in query:
-            return {
-                "data": {
-                    "boards": [{
-                        "columns": [
-                            {"id": "name_col", "title": "Name", "type": "name", "settings_str": "{}"},
-                        ],
-                    }],
-                }
-            }
-        if "create_item" in query:
-            return {"data": {"create_item": {"id": "monday-item-123"}}}
-        return {"data": {}}
-
-    adapter._request = fake_request  # type: ignore[assignment]
-    # No field mappings configured → no parent columns to set
-    with patch("app.adapters.monday.resolve_mappings", new=AsyncMock(return_value={})):
-        external_id = await adapter.push_lead(lead, config)
-    assert external_id == "monday-item-123"
-
-
-# ---------------------------------------------------------------------------
-# lookup_by_phone — pre-send CRM classification (best-effort)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_lookup_by_phone_none_without_phone_mapping():
-    """Monday can't match by phone unless the client mapped a phone column."""
-    adapter = MondayAdapter()
-    with patch("app.adapters.monday.resolve_mappings", new=AsyncMock(return_value={})):
-        result = await adapter.lookup_by_phone("+15551234567", _make_config(uuid4()))
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_lookup_by_phone_returns_unknown_on_match():
-    """A board hit is reported as contact_type=unknown — the board carries no
-    reliable customer-vs-vendor signal, so disposition defers to Slice 2."""
-    adapter = MondayAdapter()
-
-    async def fake_request(api_key, query, variables):
-        if "boards(ids" in query:  # column discovery
-            return {
-                "data": {
-                    "boards": [
-                        {"columns": [{"id": "phone_col", "title": "Phone", "type": "phone", "settings_str": "{}"}]}
-                    ]
-                }
-            }
+            board = str(variables["boardId"][0])
+            cols = SUBITEM_COLUMNS if board == "777" else PARENT_COLUMNS
+            return json_response(200, {"data": {"boards": [{"columns": cols}]}})
         if "items_page_by_column_values" in query:
-            return {"data": {"items_page_by_column_values": {"items": [{"id": "item-1", "name": "Repeat Client"}]}}}
-        return {"data": {}}
+            items = [{"id": existing_item_id}] if existing_item_id else []
+            return json_response(200, {"data": {"items_page_by_column_values": {"items": items}}})
+        if "create_item" in query:
+            return json_response(200, {"data": {"create_item": {"id": "item-123"}}})
+        if "create_subitem" in query:
+            return json_response(200, {"data": {"create_subitem": {"id": "sub-1"}}})
+        if "change_multiple_column_values" in query:
+            return json_response(200, {"data": {"change_multiple_column_values": {"id": existing_item_id}}})
+        if "me {" in query:
+            return json_response(200, {"data": {"me": {"id": "u1", "name": "Bot"}}})
+        return json_response(200, {"data": {}})
 
-    adapter._request = fake_request  # type: ignore[assignment]
-    phone_mapping = {
-        "phone": FieldMapping(
-            canonical_field="phone",
-            external_field="Phone",
-            external_field_type="column",
-            transform=None,
-        )
-    }
-    with patch("app.adapters.monday.resolve_mappings", new=AsyncMock(return_value=phone_mapping)):
-        contact = await adapter.lookup_by_phone("+15551234567", _make_config(uuid4()))
-
-    assert contact is not None
-    assert contact.external_id == "item-1"
-    assert contact.name == "Repeat Client"
-    assert contact.contact_type == ContactType.unknown
+    return handler
 
 
-@pytest.mark.asyncio
-async def test_lookup_by_phone_none_on_error():
-    """Any failure degrades to None so a real lead is never dropped."""
-    adapter = MondayAdapter()
-    with patch(
-        "app.adapters.monday.resolve_mappings",
-        new=AsyncMock(side_effect=Exception("monday down")),
-    ):
-        result = await adapter.lookup_by_phone("+15551234567", _make_config(uuid4()))
-    assert result is None
+def _adapter(rec: Recorder) -> MondayAdapter:
+    return MondayAdapter(api_key="key", board_id="123", transport=rec.transport)
+
+
+RECORD = {
+    "_name": "Jon Snow / Night's Watch / 1001",
+    "Order ID": "1001",
+    "Total": 254.98,
+    "Status": {"label": "New"},
+    "Nonexistent Column": "skipped",
+    "_line_items": [
+        {"_name": "Widget - Blue", "Quantity": 2},
+        {"title": "Gadget", "variant_title": "Large", "Quantity": 1},
+    ],
+}
+
+
+async def test_creates_item_with_columns_resolved_by_display_name():
+    rec = Recorder(graphql_handler())
+    external_id = await _adapter(rec).upsert_record(RECORD)
+
+    assert external_id == "item-123"
+    create = next(b for b in rec.bodies() if "create_item" in b["query"])
+    assert create["variables"]["boardId"] == "123"
+    assert create["variables"]["itemName"] == "Jon Snow / Night's Watch / 1001"
+    column_values = json.loads(create["variables"]["columnValues"])
+    assert column_values == {"text_1": "1001", "numbers_2": "254.98", "status_3": {"label": "New"}}
+    assert "Nonexistent Column" not in json.dumps(column_values)
+
+
+async def test_creates_one_subitem_per_line_item_with_subitem_columns():
+    rec = Recorder(graphql_handler())
+    await _adapter(rec).upsert_record(RECORD)
+
+    subs = [b for b in rec.bodies() if "create_subitem" in b["query"]]
+    assert [s["variables"]["itemName"] for s in subs] == ["Widget - Blue", "Gadget - Large"]
+    assert all(s["variables"]["parentItemId"] == "item-123" for s in subs)
+    assert json.loads(subs[0]["variables"]["columnValues"]) == {"numbers_9": "2"}
+    # Discovery followed the subtasks column to board 777.
+    discovery = [b for b in rec.bodies() if "boards(ids" in b["query"]]
+    assert [d["variables"]["boardId"] for d in discovery] == [["123"], ["777"]]
+
+
+async def test_subitem_failure_does_not_abort_the_push():
+    base = graphql_handler()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "create_subitem" in body_of(request)["query"]:
+            return json_response(200, {"errors": [{"message": "subitem boom"}]})
+        return base(request)
+
+    rec = Recorder(handler)
+    assert await _adapter(rec).upsert_record(RECORD) == "item-123"
+
+
+async def test_key_match_updates_instead_of_creating():
+    rec = Recorder(graphql_handler(existing_item_id="item-old"))
+    record = {**RECORD, "_key": "Order ID"}
+    external_id = await _adapter(rec).upsert_record(record)
+
+    assert external_id == "item-old"
+    queries = [b["query"] for b in rec.bodies()]
+    assert not any("create_item" in q for q in queries)
+    assert not any("create_subitem" in q for q in queries)
+    update = next(b for b in rec.bodies() if "change_multiple_column_values" in b["query"])
+    assert update["variables"]["itemId"] == "item-old"
+    lookup = next(b for b in rec.bodies() if "items_page_by_column_values" in b["query"])
+    assert lookup["variables"] == {"boardId": "123", "columnId": "text_1", "value": "1001"}
+
+
+async def test_key_without_match_creates():
+    rec = Recorder(graphql_handler(existing_item_id=None))
+    assert await _adapter(rec).upsert_record({**RECORD, "_key": "Order ID"}) == "item-123"
+
+
+async def test_graphql_complexity_error_is_transient():
+    rec = Recorder(lambda r: json_response(200, {"errors": [{"message": "Complexity budget exhausted"}]}))
+    with pytest.raises(TransientDeliveryError, match="Complexity"):
+        await _adapter(rec).upsert_record(RECORD)
+
+
+async def test_graphql_other_error_is_permanent():
+    rec = Recorder(lambda r: json_response(200, {"errors": [{"message": "Column not found"}]}))
+    with pytest.raises(PermanentDeliveryError, match="Column not found"):
+        await _adapter(rec).upsert_record(RECORD)
+
+
+async def test_http_error_propagates_for_worker_classification():
+    rec = Recorder(lambda r: json_response(503, {"error": "down"}))
+    with pytest.raises(httpx.HTTPStatusError) as exc:
+        await _adapter(rec).upsert_record(RECORD)
+    assert exc.value.response.status_code == 503
+
+
+async def test_board_not_found_is_permanent():
+    rec = Recorder(lambda r: json_response(200, {"data": {"boards": []}}))
+    with pytest.raises(PermanentDeliveryError, match="not found"):
+        await _adapter(rec).upsert_record(RECORD)
+
+
+async def test_health_check():
+    assert await _adapter(Recorder(graphql_handler())).health_check() is True
+    assert await _adapter(Recorder(lambda r: json_response(401, {}))).health_check() is False
+
+
+def test_serialize_column_value():
+    s = MondayAdapter._serialize_column_value
+    assert s({"label": "Done"}) == {"label": "Done"}
+    assert s(["a", "b"]) == "a, b"
+    assert s(254.98) == "254.98"
+    assert s("x") == "x"
+
+
+def test_sends_auth_and_api_version_headers():
+    adapter = MondayAdapter(api_key="secret-key", board_id="1")
+    assert adapter._client.headers["Authorization"] == "secret-key"
+    assert adapter._client.headers["API-Version"] == "2024-10"
+    assert adapter._client.timeout.read == 30.0

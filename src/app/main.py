@@ -14,6 +14,7 @@ import sentry_sdk
 from fastapi import FastAPI
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from app.adapters.registry import get_adapter
 from app.config import get_settings, require_startup_settings
 from app.db import close_pool, init_pool
 from app.routers import health
@@ -29,6 +30,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Fail closed: a deploy without its webhook signing secret must not come up.
     require_startup_settings(settings)
+    # Construct the destination adapter now so missing credentials refuse the
+    # boot instead of dead-lettering the first event.
+    destination = get_adapter(settings.destination)
+    logger.info("destination adapter ready", extra={"destination": destination.name})
 
     if settings.sentry_dsn:
         sentry_sdk.init(

@@ -1,86 +1,102 @@
-"""CRM adapter Protocol.
+"""Destination adapter Protocol and the record contract.
 
-Every supported integration (GHL, HubSpot, Monday, generic webhook
-config) conforms to this interface. Adapters live in
-app/adapters/<provider>.py; the registry in app/adapters/registry.py
-dispatches at runtime based on client_configs.crm_provider.
+One deployment pushes to exactly one destination, selected by the
+DESTINATION env var and constructed once by the registry. Adapters read
+their own credentials from the environment at construction and raise
+AdapterConfigError if anything is missing — the lifespan handler
+constructs the adapter at boot, so a misconfigured deploy never starts.
 
-Field mapping (Layer 2) and signing-secret lookup happen outside the
-adapter — they are stable across providers and live in services/.
+The record contract
+-------------------
+`upsert_record()` receives a plain dict produced by the mapping layer.
+Keys are the destination's field display names ("Order ID", "Total");
+values are JSON scalars, ISO-8601 date strings, or lists (multi-select,
+relations). Adapters resolve display names to whatever the destination
+really wants — Monday column ids, Notion property types, Sheets column
+positions — by introspecting the destination, never by hard-coding.
+
+Reserved keys, all optional, all underscore-prefixed so they cannot
+collide with a real field name:
+
+  _name        str         human label: Monday item name, Slack header,
+                           Notion title when no field targets the title property
+  _key         str         name of the field to match on for update-instead-
+                           of-create. Append-only destinations (Slack, Sheets)
+                           ignore it.
+  _line_items  list[dict]  sub-records with the same shape. Monday → subitems,
+                           Slack → bullet list; others ignore with a warning.
+
+Failure signalling
+------------------
+Let httpx.HTTPStatusError propagate (via raise_for_status) for HTTP
+failures — the worker classifies 4xx as permanent and 5xx/408/429 as
+transient. Where a destination reports errors inside a 200 body (GraphQL,
+Slack), raise PermanentDeliveryError or TransientDeliveryError explicitly.
 """
 
 from __future__ import annotations
 
-from decimal import Decimal
+import os
 from typing import Any, Protocol, runtime_checkable
 
-from app.models.client_config import ClientConfig
-from app.models.crm_contact import CRMContact
-from app.models.lead import Lead, LeadCreate
+RESERVED_KEYS = frozenset({"_name", "_key", "_line_items"})
+
+
+class AdapterConfigError(ValueError):
+    """A required credential or setting for the configured destination is missing."""
 
 
 @runtime_checkable
-class CRMAdapter(Protocol):
-    """All CRM adapters conform to this Protocol."""
+class Destination(Protocol):
+    name: str
 
-    name: str  # 'ghl' | 'hubspot' | 'monday' | 'generic'
-
-    async def push_lead(self, lead: Lead, config: ClientConfig) -> str:
-        """Create the lead in the external system. Returns the external_id."""
+    async def upsert_record(self, record: dict[str, Any]) -> str:
+        """Create or update the record downstream. Returns the external id."""
         ...
 
-    async def update_lead(
-        self,
-        external_id: str,
-        updates: dict[str, Any],
-        config: ClientConfig,
-    ) -> None:
-        """Update fields on an existing external record."""
+    async def health_check(self) -> bool:
+        """Verify credentials and connectivity."""
         ...
 
-    async def parse_webhook(
-        self,
-        payload: dict[str, Any],
-        config: ClientConfig,
-    ) -> LeadCreate:
-        """Translate an inbound webhook from this provider into a canonical LeadCreate."""
-        ...
 
-    async def health_check(self, config: ClientConfig) -> bool:
-        """Verify credentials + connectivity. Returns True if reachable."""
-        ...
+# ---------------------------------------------------------------------------
+# Helpers shared by adapters
+# ---------------------------------------------------------------------------
 
-    async def lookup_by_phone(
-        self,
-        phone: str,
-        config: ClientConfig,
-    ) -> CRMContact | None:
-        """Best-effort: find an existing contact by phone number.
 
-        Returns None if not found, unsupported, or on error — callers must
-        treat None as 'no match, proceed as potential lead', never as a hard
-        failure. The caller_classification stage degrades gracefully on None,
-        and post-reply intent classification is the safety net.
+def require_env(name: str) -> str:
+    """Read a required env var at construction time; fail closed if missing."""
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise AdapterConfigError(f"{name} is required for the configured destination")
+    return value
 
-        Implementations MUST enforce their own short timeout (~2s): a slow CRM
-        must never delay the missed-call SMS past its <30s target.
-        """
-        ...
 
-    async def fetch_recovered_value(
-        self,
-        external_id: str,
-        config: ClientConfig,
-    ) -> Decimal | None:
-        """Best-effort: the booked revenue the CRM has recorded for this contact.
+def optional_env(name: str, default: str) -> str:
+    return os.environ.get(name, "").strip() or default
 
-        Returns the contact's confirmed booked dollars (e.g. HubSpot
-        total_revenue / the sum of closed-won deals), or None if unsupported,
-        not yet booked, not found, or on error. Like lookup_by_phone, callers
-        MUST treat None as 'no confirmed value yet', never a hard failure.
 
-        Runs in the background revenue_sync job, not on the hot path, but
-        implementations SHOULD still enforce a short timeout so the job stays
-        bounded across many leads.
-        """
-        ...
+def split_record(record: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Separate destination fields from reserved `_`-prefixed metadata."""
+    fields = {k: v for k, v in record.items() if not k.startswith("_")}
+    meta = {k: v for k, v in record.items() if k in RESERVED_KEYS}
+    return fields, meta
+
+
+def display_name(record: dict[str, Any], fallback: str = "Untitled") -> str:
+    """`_name`, else the first non-empty string field, else the fallback."""
+    name = record.get("_name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    for key, value in record.items():
+        if not key.startswith("_") and isinstance(value, str) and value.strip():
+            return value.strip()
+    return fallback
+
+
+def as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list | tuple | set):
+        return list(value)
+    return [value]

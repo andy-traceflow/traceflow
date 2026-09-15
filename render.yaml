@@ -57,6 +57,32 @@ envVarGroups:
       # Required. The service refuses to boot without it (fail closed).
       - key: SHOPIFY_WEBHOOK_SECRET
         sync: false
+      # Required: monday | hubspot | notion | slack | sheets. Then set that
+      # adapter's credentials below; the others can stay unset.
+      - key: DESTINATION
+        sync: false
+      - key: MONDAY_API_KEY
+        sync: false
+      - key: MONDAY_BOARD_ID
+        sync: false
+      - key: HUBSPOT_ACCESS_TOKEN
+        sync: false
+      - key: HUBSPOT_OBJECT
+        sync: false
+      - key: NOTION_API_KEY
+        sync: false
+      - key: NOTION_DATABASE_ID
+        sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_CHANNEL
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: GOOGLE_SHEET_ID
+        sync: false
+      - key: GOOGLE_SHEET_TAB
+        sync: false
       # Host allow-list for TrustedHostMiddleware. Leave unset to disable the
       # check; set to e.g. "*.onrender.com" so Render health checks keep working.
       - key: ALLOWED_HOSTS

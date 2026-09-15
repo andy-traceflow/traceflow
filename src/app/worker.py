@@ -261,11 +261,10 @@ async def run_forever(
             await asyncio.sleep(poll_interval)
 
 
-async def _main_async(args: argparse.Namespace) -> int:
+async def _main_async(args: argparse.Namespace, pipeline: Pipeline) -> int:
     await init_pool()
     try:
         store = get_event_store()
-        pipeline = build_pipeline()
         if args.once:
             n = await run_once(store, pipeline, batch_size=args.batch_size)
             logger.info("worker --once finished", extra={"processed": n})
@@ -289,9 +288,10 @@ def main(argv: list[str] | None = None) -> int:
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
     require_startup_settings(settings)  # fail closed: no DB URL → no worker
+    pipeline = build_pipeline()  # fail closed: bad DESTINATION / missing creds → no worker
 
     try:
-        return asyncio.run(_main_async(args))
+        return asyncio.run(_main_async(args, pipeline))
     except KeyboardInterrupt:
         return 0
 

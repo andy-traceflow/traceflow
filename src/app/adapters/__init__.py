@@ -1,4 +1,10 @@
-from app.adapters.base import CRMAdapter
-from app.adapters.registry import get_adapter, register_adapter
+from app.adapters.base import AdapterConfigError, Destination
+from app.adapters.registry import get_adapter, list_providers, register_adapter
 
-__all__ = ["CRMAdapter", "get_adapter", "register_adapter"]
+__all__ = [
+    "AdapterConfigError",
+    "Destination",
+    "get_adapter",
+    "list_providers",
+    "register_adapter",
+]

@@ -46,6 +46,7 @@ def _headers(body: bytes, **extra: str) -> dict[str, str]:
 def _env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SHOPIFY_WEBHOOK_SECRET", SECRET)
     monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://unused")
+    monkeypatch.setenv("DESTINATION", "slack")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

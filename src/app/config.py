@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # failure this template exists to prevent.
     supabase_db_url: str = ""
 
+    # Which adapter receives every event: monday | hubspot | notion | slack |
+    # sheets. The adapter reads its own credentials (see .env.example) and the
+    # app refuses to start if any are missing.
+    destination: str = ""
+
     # Shopify webhook HMAC secret. Shopify admin → Settings → Notifications →
     # Webhooks → the "signed with" value at the bottom of the page. REQUIRED:
     # the app refuses to start without it (see require_startup_settings).
@@ -63,7 +68,7 @@ def get_settings() -> Settings:
 # Settings whose absence must stop the process, not degrade it. Checked once
 # in the lifespan handler so a misconfigured deploy fails at boot — never on
 # the first webhook, and never by silently skipping a check.
-REQUIRED_AT_STARTUP: tuple[str, ...] = ("shopify_webhook_secret", "supabase_db_url")
+REQUIRED_AT_STARTUP: tuple[str, ...] = ("shopify_webhook_secret", "supabase_db_url", "destination")
 
 
 def require_startup_settings(settings: Settings | None = None) -> None:

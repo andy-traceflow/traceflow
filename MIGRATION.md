@@ -160,3 +160,40 @@ reads from the `events` table. Nothing runs in a `BackgroundTask` anymore.
 - The receive side is now durable and deployable. The worker runs but `build_pipeline()` raises
   until Phase 4 supplies a destination — so at this commit events accumulate as `received` and
   nothing is delivered. That is the correct failure mode: nothing is lost.
+
+---
+
+## Phase 4 — Generalize the adapter layer
+
+The lead-shaped `CRMAdapter` (push_lead / lookup_by_phone / fetch_recovered_value / config
+parameter) becomes the two-method `Destination` Protocol. Adapters read their own env at
+construction and fail closed; the record is a plain dict of destination display names.
+
+| Op | Path | Reason |
+|---|---|---|
+| R | `src/app/adapters/base.py` | `Destination` Protocol exactly per spec (`name`, `upsert_record(record) -> str`, `health_check() -> bool`, `@runtime_checkable`). Documents the **record contract**: keys are display names; reserved `_name` / `_key` / `_line_items`. Helpers `require_env` (→ `AdapterConfigError`, a `ValueError`), `split_record`, `display_name`, `as_list` |
+| R | `src/app/adapters/registry.py` | Same pattern (`register_adapter` / `get_adapter` / `list_providers`), now **lazy** construct-once: factories at import, instances on first `get_adapter()`. Import-time construction would have made importing the package fail without credentials. `reset_registry()` for tests. Note: the spec says registry tests "should survive" — there were none; `tests/adapters/test_registry.py` is new |
+| R | `src/app/adapters/monday.py` | Ported. **Kept**: column ids resolved by display name on every call, `subtasks` → subitem-board discovery, `_serialize_column_value` verbatim, one subitem per `_line_items` entry, subitem failure does not abort the push. **Dropped**: `lookup_by_phone`, `fetch_recovered_value`, `LOOKUP_TIMEOUT` (2s SMS budget), `update_lead`, `parse_webhook`, `ClientConfig`/`field_mappings` coupling. Timeout 30s. **Added**: `_key` upsert via `items_page_by_column_values` → `change_multiple_column_values`; GraphQL errors (HTTP 200) mapped to `TransientDeliveryError` (complexity/rate-limit) or `PermanentDeliveryError`; HTTP errors now *raise* (`raise_for_status`) instead of returning `None`, so the worker can classify them. Env `MONDAY_API_KEY`, `MONDAY_BOARD_ID` |
+| R | `src/app/adapters/hubspot.py` | Ported with the same treatment. Record keys are property internal names. `_key` → search → PATCH; HubSpot's own 409 (`Existing ID: n`) resolved to PATCH. Lists → `;`-joined (multi-checkbox), bools → `"true"/"false"`. Env `HUBSPOT_ACCESS_TOKEN`, `HUBSPOT_OBJECT` (default `contacts`) |
+| D | `src/app/adapters/ghl.py` | (already deleted in Phase 1) |
+| + | `src/app/adapters/notion.py` | New. Property types resolved by introspecting `GET /databases/{id}` (cached, refreshed on unknown property) — same "resolve by display name" idea as Monday. Encodes title, rich_text, number, select, multi_select, date, relation, email, phone_number, url, checkbox; title falls back to `_name`. `_key` → database query filter → PATCH. **429 handled in-adapter**: honors `Retry-After` up to 3 retries (injectable sleep), then `TransientDeliveryError`. Env `NOTION_API_KEY`, `NOTION_DATABASE_ID` |
+| + | `src/app/adapters/slack.py` | New. `chat.postMessage` with Block Kit: header (`_name`), section fields chunked to Slack's 10-per-section limit, `_line_items` as a bullet list. Slack's in-body `ok:false` mapped: `ratelimited`/`internal_error` → transient, else permanent. Returns `ts`. Env `SLACK_BOT_TOKEN`, `SLACK_CHANNEL` |
+| + | `src/app/adapters/sheets.py` | New. Columns resolved from the header row (row 1), cached + refreshed; row written in header order. Service-account auth: RS256 JWT assertion → access token, cached to expiry−60s (injectable `token_provider` for tests). Append-only: `_key`/`_line_items` ignored with a warning. Env `GOOGLE_SERVICE_ACCOUNT_JSON`, `GOOGLE_SHEET_ID`, `GOOGLE_SHEET_TAB` |
+| E | `src/app/adapters/__init__.py` | Exports `Destination`, `AdapterConfigError`, `get_adapter`, `register_adapter`, `list_providers` |
+| E | `src/app/pipeline.py` | `build_pipeline()` now resolves `DESTINATION` through the registry (`deliver = adapter.upsert_record`). Imports the registry locally so `adapters → pipeline` stays one-way |
+| E | `src/app/config.py` | Added `destination`; added to `REQUIRED_AT_STARTUP` |
+| E | `src/app/main.py`, `src/app/worker.py` | Both construct the adapter at boot (`get_adapter` / `build_pipeline` before `asyncio.run`) so missing credentials refuse the process rather than dead-lettering the first event |
+| E | `pyproject.toml` | `pyjwt[crypto]` re-added (removed in Phase 1) — RS256 assertion for the Sheets service account |
+| E | `render.yaml`, `.env.example` | `DESTINATION` + all adapter vars added to the env group / example (with where-to-get-it comments) |
+| R | `tests/adapters/test_monday_adapter.py`, `test_hubspot_adapter.py` | Rewritten — every old test was lead-shaped. Now `httpx.MockTransport` end-to-end: 12 Monday (column resolution, subitems + subitem-board discovery, subitem failure tolerated, `_key` update path, complexity→transient, other→permanent, HTTP propagates, board-not-found, health, serialize, headers/timeout) + 7 HubSpot (flat properties + serialization, `_key` search→PATCH, 409→PATCH, 4xx propagates, empty record permanent, object type from env, health) |
+| + | `tests/adapters/conftest.py`, `test_registry.py`, `test_notion_adapter.py`, `test_slack_adapter.py`, `test_sheets_adapter.py`, `tests/test_pipeline.py` | Recording `MockTransport`; registry (list, unknown, missing creds ×5, construct-once, replace, Protocol conformance ×5, helpers); Notion 11 (every type encoded, schema cached/refreshed, title precedence, nothing-matches permanent, bad number permanent, `_key` hit/miss with typed filters, 429 retried honoring Retry-After, persistent 429 transient, 4xx propagates, health); Slack 6 (blocks shape incl. line items, 10-field chunking, ratelimited transient, channel_not_found permanent, 5xx propagates, health); Sheets 7 (header-order row with blanks, header cached/refreshed, no header permanent, cells, bad JSON config, **real RS256 token mint verified against the public key + cached**, health); pipeline 4 |
+| E | `tests/test_shopify_signature_dependency.py`, `tests/test_shopify_webhook.py` | Fixtures set `DESTINATION` (newly required) |
+
+### Phase 4 result
+- `ruff check .` → clean.
+- `pytest tests/ -q` (**full suite, no `--ignore`**) → **138 passed, 6 skipped, 2.67s.** The suite is
+  green at every commit from here on; the 6 skips remain the Postgres-backed store tests (CI).
+- No network: every adapter test runs through `httpx.MockTransport`.
+- The branch is now functional end-to-end: webhook → `events` row → worker → any of five
+  destinations. The transform is still `passthrough` (raw Shopify payload keys as the record) —
+  Phase 5 supplies `mapping.yaml`.

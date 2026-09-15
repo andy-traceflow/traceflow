@@ -34,6 +34,7 @@ def _configured_secret(monkeypatch: pytest.MonkeyPatch):
     """Every test starts with the secret configured; individual tests remove it."""
     monkeypatch.setenv("SHOPIFY_WEBHOOK_SECRET", SECRET)
     monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://unused")
+    monkeypatch.setenv("DESTINATION", "slack")
     get_settings.cache_clear()
     # Accepted requests go on to persist; give them an in-memory store.
     app.dependency_overrides[get_event_store] = InMemoryEventStore

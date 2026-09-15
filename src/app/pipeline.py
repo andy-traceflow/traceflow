@@ -1,9 +1,12 @@
 """The transform → deliver pipeline the worker runs on each event, and the
 exception types adapters use to tell the worker how to react.
 
-Phase 3: the pipeline shape and the passthrough transform exist; there is
-no destination yet. Phase 4 wires `deliver` to the adapter registry,
-Phase 5 replaces `passthrough` with the mapping.yaml transform.
+`build_pipeline()` resolves the destination from DESTINATION via the
+adapter registry. Phase 5 replaces `passthrough` with the mapping.yaml
+transform.
+
+This module imports nothing from app.adapters at module level — adapters
+import the error types from here, so the dependency points one way.
 """
 
 from __future__ import annotations
@@ -49,8 +52,13 @@ def passthrough(event: Event) -> dict[str, Any]:
 
 
 def build_pipeline() -> Pipeline:
-    """Construct the production pipeline from environment configuration."""
-    raise RuntimeError(
-        "no destination adapter is wired yet — Phase 4 adds the adapter registry "
-        "and Phase 5 the mapping.yaml transform"
-    )
+    """Construct the production pipeline from environment configuration.
+
+    Raises ValueError (incl. AdapterConfigError) when DESTINATION is unknown
+    or its credentials are missing — callers run this at boot, fail closed.
+    """
+    from app.adapters.registry import get_adapter  # local: keeps adapters → pipeline one-way
+    from app.config import get_settings
+
+    destination = get_adapter(get_settings().destination)
+    return Pipeline(transform=passthrough, deliver=destination.upsert_record)
