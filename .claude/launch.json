@@ -2,9 +2,9 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "admin-preview",
+      "name": "api",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["scripts/dev_admin_preview.py"],
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--reload", "--port", "8000"],
       "port": 8000
     }
   ]

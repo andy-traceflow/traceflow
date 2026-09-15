@@ -1,8 +1,10 @@
 """Typed application settings loaded from environment variables.
 
-Per-client integration credentials live in client_configs.crm_credentials JSONB,
-NOT here. The settings in this file are platform-level (one TraceFlow installation,
-many tenants).
+Single-tenant: every setting here describes the one deployment this
+service is. Destination credentials (Monday, Notion, Slack, ...) are
+read by the adapter that needs them at construction time — see
+`src/app/adapters/`. The webhook signing secret is validated at startup
+(Phase 2), not per request.
 """
 
 from functools import lru_cache
@@ -18,49 +20,16 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     base_url: str = "http://localhost:8000"
 
-    # Supabase
-    supabase_url: str = ""
-    supabase_service_key: str = ""
-    supabase_anon_key: str = ""
-    supabase_db_url: str = ""  # direct Postgres DSN for asyncpg pool
+    # Database — direct Postgres DSN for the asyncpg pool
+    supabase_db_url: str = ""
 
-    # AI providers
-    anthropic_api_key: str = ""
-    openai_api_key: str = ""
-
-    # Twilio
-    twilio_account_sid: str = ""
-    twilio_auth_token: str = ""
-
-    # Email transport
-    resend_api_key: str = ""
-    notify_from_email: str = "hello@traceflow.app"
-
-    # Security
-    admin_jwt_secret: str = ""
-    allowed_origins: str = ""
     # Host allow-list for TrustedHostMiddleware. Comma-separated; supports
-    # wildcards (e.g. "*.onrender.com"). Empty (default) disables the check —
-    # so existing deploys are unaffected until this is set. When set, localhost
-    # + testserver are always appended for dev/tests. Set it before exposing the
-    # app on app.traceflow.app.
+    # wildcards (e.g. "*.onrender.com"). Empty (default) disables the check.
+    # When set, localhost + testserver are always appended for dev/tests.
     allowed_hosts: str = ""
-    # Admin /login failure rate limiting. Default on; set
-    # ADMIN_LOGIN_RATE_LIMIT_ENABLED=false to disable (e.g. during live
-    # testing when repeated logins would otherwise trip the lockout).
-    admin_login_rate_limit_enabled: bool = True
-
-    # Demo mode — when true, serves a public no-login, read-only copy of the
-    # admin UI at /demo backed entirely by in-memory fixtures (no DB access).
-    # Web service only; never set on the cron services. See ADR / routers/demo.py.
-    demo_mode: bool = False
 
     # Observability
     sentry_dsn: str = ""
-
-    @property
-    def allowed_origins_list(self) -> list[str]:
-        return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
 
     @property
     def allowed_hosts_list(self) -> list[str]:

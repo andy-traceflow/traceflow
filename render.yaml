@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: traceflow-api
+    name: sia-kit-api
     runtime: python
     plan: starter
     region: oregon
@@ -12,95 +12,18 @@ services:
         value: production
       - key: PYTHON_VERSION
         value: "3.12"
-      # Public read-only demo at /demo (web service ONLY — never on the crons
-      # below, which must operate on real tenant data, not demo fixtures).
-      - key: DEMO_MODE
-        value: "true"
-      - fromGroup: traceflow-secrets
+      - fromGroup: sia-kit-secrets
 
-  - type: cron
-    name: adapter-health-check
-    runtime: python
-    schedule: "0 * * * *"  # hourly
-    buildCommand: pip install -e .
-    startCommand: python -m app.jobs.adapter_health
-    envVars:
-      - key: ENVIRONMENT
-        value: production
-      - key: PYTHON_VERSION
-        value: "3.12"
-      - fromGroup: traceflow-secrets
-
-  - type: cron
-    name: daily-digest
-    runtime: python
-    schedule: "0 * * * *"  # hourly; each client is gated to its own 06:00 local time
-    buildCommand: pip install -e .
-    startCommand: python -m app.jobs.daily_digest
-    envVars:
-      - key: ENVIRONMENT
-        value: production
-      - key: PYTHON_VERSION
-        value: "3.12"
-      - fromGroup: traceflow-secrets
-
-  - type: cron
-    name: revenue-sync
-    runtime: python
-    schedule: "0 3 * * *"  # daily 03:00 UTC; CRM revenue readback (mode='crm' clients)
-    buildCommand: pip install -e .
-    startCommand: python -m app.jobs.revenue_sync
-    envVars:
-      - key: ENVIRONMENT
-        value: production
-      - key: PYTHON_VERSION
-        value: "3.12"
-      - fromGroup: traceflow-secrets
-
-  - type: cron
-    name: monthly-report
-    runtime: python
-    schedule: "0 * 1-5 * *"  # hourly on the 1st-5th; each client gated to its local 09:00, sent once per month
-    buildCommand: pip install -e .
-    startCommand: python -m app.jobs.monthly_report
-    envVars:
-      - key: ENVIRONMENT
-        value: production
-      - key: PYTHON_VERSION
-        value: "3.12"
-      - fromGroup: traceflow-secrets
+  # Phase 3d adds the delivery worker here (background worker, or a cron
+  # running `python -m app.worker --once` for cheap deployments).
 
 envVarGroups:
-  - name: traceflow-secrets
+  - name: sia-kit-secrets
     envVars:
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_KEY
-        sync: false
-      - key: SUPABASE_ANON_KEY
-        sync: false
       - key: SUPABASE_DB_URL
         sync: false
-      - key: ANTHROPIC_API_KEY
-        sync: false
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: TWILIO_ACCOUNT_SID
-        sync: false
-      - key: TWILIO_AUTH_TOKEN
-        sync: false
-      - key: RESEND_API_KEY
-        sync: false
-      - key: NOTIFY_FROM_EMAIL
-        sync: false
-      - key: ADMIN_JWT_SECRET
-        sync: false
-      - key: ALLOWED_ORIGINS
-        sync: false
       # Host allow-list for TrustedHostMiddleware. Leave unset to disable the
-      # check; set to e.g. "app.traceflow.app,*.onrender.com" before serving on
-      # the custom domain. (Include the onrender host so Render health checks
-      # and the fallback URL keep working.)
+      # check; set to e.g. "*.onrender.com" so Render health checks keep working.
       - key: ALLOWED_HOSTS
         sync: false
       - key: SENTRY_DSN

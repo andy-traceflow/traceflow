@@ -1,14 +1,15 @@
 """Shopify webhook receiver.
 
-Path: POST /webhooks/shopify/{client_id}
-Auth: HMAC-SHA256 base64 (verified by tenant_resolver middleware via
-      the per-client secret in client_configs.webhook_signing_secrets).
+Path: POST /webhooks/shopify/{topic:path}
 
-Pattern matches the original source-repo Shopify webhook handler with
-two changes:
-  - tenant identification via URL path (not store-key lookup)
-  - dedupe + downstream processing run in a BackgroundTask so the 200
-    is returned to Shopify within the 5-second SLA
+Target shape (Phase 3c): verify HMAC → insert one row into `events` →
+return 200. No transformation, no destination call — the worker does
+that from the events table.
+
+Phase 1 placeholder: reads the cached body, acknowledges unparseable JSON
+with a 200 (so Shopify stops retrying a body that will never parse), and
+returns 200. Signature verification (Phase 2) and durable persistence
+(Phase 3c) are NOT wired yet — this branch is not deployable until then.
 """
 
 from __future__ import annotations
@@ -16,124 +17,43 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
-from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Request, Response
-
-from app.db import set_tenant_context
-from app.models.lead import LeadCreate
-from app.services.dedupe import is_duplicate
+from fastapi import APIRouter, Request, Response
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks/shopify", tags=["webhooks"])
 
 
-@router.post("/{client_id}")
-async def shopify_webhook(
-    client_id: UUID,
-    request: Request,
-    background_tasks: BackgroundTasks,
-) -> Response:
-    # The body was already read + verified by the tenant_resolver middleware
-    # and cached on request.state._cached_body — re-reading here is free.
+@router.post("/{topic:path}")
+async def shopify_webhook(topic: str, request: Request) -> Response:
+    # The signature dependency reads the body once and caches it on
+    # request.state._cached_body — re-reading here is free.
     body: bytes = getattr(request.state, "_cached_body", b"") or await request.body()
 
     try:
-        order = json.loads(body)
+        payload = json.loads(body)
     except json.JSONDecodeError:
         # Acknowledge to Shopify so it doesn't retry an unparseable body.
-        logger.warning("shopify webhook: invalid JSON body", extra={"client_id": str(client_id)})
+        logger.warning("shopify webhook: invalid JSON body", extra={"topic": topic})
         return Response(status_code=200, content="ok")
 
-    order_id = order.get("id")
-    if is_duplicate(client_id, source="shopify", external_id=order_id):
-        return Response(status_code=200, content="ok")
-
-    topic = request.headers.get("X-Shopify-Topic", "unknown")
+    webhook_id = request.headers.get("X-Shopify-Webhook-Id", "")
     logger.info(
-        "shopify webhook accepted",
+        "shopify webhook accepted (phase 1 placeholder — not persisted)",
         extra={
-            "client_id": str(client_id),
-            "order_id": str(order_id),
             "topic": topic,
+            "webhook_id": webhook_id,
+            "order_id": str(payload.get("id")) if isinstance(payload, dict) else None,
         },
     )
-
-    background_tasks.add_task(_process_order, client_id, order)
     return Response(status_code=200, content="ok")
 
 
-async def _process_order(client_id: UUID, order: dict[str, Any]) -> None:
-    """Convert a Shopify order payload into a canonical Lead and persist it.
-
-    Per architecture, raw_payload is always preserved on the lead. CRM
-    push and AI qualification happen downstream — this function's job is
-    intake, not orchestration.
-    """
-    lead_create = _shopify_order_to_lead(client_id, order)
-
-    async with set_tenant_context(client_id) as conn:
-        row = await conn.fetchrow(
-            """
-            INSERT INTO leads (
-                client_id, external_id, source_system,
-                contact_name, contact_company, phone, email, address,
-                raw_payload
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            RETURNING id
-            """,
-            lead_create.client_id,
-            lead_create.external_id,
-            lead_create.source_system,
-            lead_create.contact_name,
-            lead_create.contact_company,
-            lead_create.phone,
-            lead_create.email,
-            lead_create.address,
-            order,
-        )
-        lead_id = row["id"] if row else None
-
-        await conn.execute(
-            """
-            INSERT INTO events (client_id, lead_id, event_type, payload)
-            VALUES ($1, $2, 'shopify_order_received', $3)
-            """,
-            client_id,
-            lead_id,
-            {"order_id": order.get("id"), "name": order.get("name")},
-        )
-
-    logger.info(
-        "shopify lead persisted",
-        extra={"client_id": str(client_id), "lead_id": str(lead_id)},
-    )
-
-
-def _shopify_order_to_lead(client_id: UUID, order: dict[str, Any]) -> LeadCreate:
-    """Translate a Shopify order webhook payload into a canonical LeadCreate.
-
-    Resolution priority for contact and company mirrors the source repo's
-    behavior: shipping_address > billing_address > customer.
-    """
-    contact_name = _resolve_contact_name(order)
-    contact_company = _resolve_company(order)
-    phone = _resolve_phone(order)
-    email = order.get("email") or (order.get("customer") or {}).get("email")
-    address = _resolve_address(order)
-
-    return LeadCreate(
-        client_id=client_id,
-        source_system="shopify",
-        external_id=str(order.get("id")) if order.get("id") is not None else None,
-        contact_name=contact_name,
-        contact_company=contact_company,
-        phone=phone,
-        email=email,
-        address=address,
-        raw_payload=order,
-    )
+# ---------------------------------------------------------------------------
+# Payload resolution helpers. Priority: shipping_address > billing_address >
+# customer. This ordering is hard-won from the SEMCO integration — keep it.
+# ---------------------------------------------------------------------------
 
 
 def _resolve_contact_name(order: dict[str, Any]) -> str | None:
