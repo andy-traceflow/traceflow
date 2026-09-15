@@ -1,4 +1,4 @@
-"""PostgresEventStore against a real database. Skips without TRACEFLOW_TEST_DB_URL.
+"""PostgresEventStore against a real database. Skips without TEST_DB_URL.
 
 Requires migrations/001_create_events.sql applied (CI does this).
 These are the guarantees the in-memory fake only imitates: the unique
@@ -9,14 +9,17 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid4
 
 import pytest
 
 from app.config import get_settings
 from app.db import close_pool, get_connection, init_pool
-from app.models.event import EventStatus
+from app.models.event import Event, EventStatus
+from app.pipeline import Pipeline, passthrough
 from app.services.events import PostgresEventStore
+from app.worker import run_once
 
 
 @pytest.fixture
@@ -33,13 +36,13 @@ async def store(db_url: str, monkeypatch: pytest.MonkeyPatch):
         get_settings.cache_clear()
 
 
-async def _insert(store: PostgresEventStore, webhook_id: str):
+async def _insert(store: PostgresEventStore, webhook_id: str, payload: dict[str, Any] | None = None):
     return await store.insert(
         source="shopify",
         topic="orders/create",
         webhook_id=webhook_id,
         shop_domain="example.myshopify.com",
-        payload={"id": 1, "line_items": [{"sku": "A"}]},
+        payload=payload if payload is not None else {"id": 1, "line_items": [{"sku": "A"}]},
     )
 
 
@@ -149,3 +152,32 @@ async def test_operational_reads_and_replay(store):
     assert replayed.next_retry_at is None
     claimed_ids = {e.id for e in await store.claim(limit=10, lease_seconds=60)}
     assert dead_id in claimed_ids
+
+
+async def test_two_workers_running_simultaneously_never_deliver_the_same_event_twice(store):
+    """End to end through run_once(): two workers, one table, 30 events, 30 deliveries."""
+    n = 30
+    for i in range(n):
+        await _insert(store, f"wh-{i}", payload={"n": i})
+
+    delivered: list[int] = []
+
+    async def deliver(record: dict[str, Any]) -> str:
+        await asyncio.sleep(0.002)  # yield so the two workers interleave
+        delivered.append(record["n"])
+        return f"ext-{record['n']}"
+
+    async def no_alert(event: Event, error: str) -> None:
+        pass
+
+    pipeline = Pipeline(passthrough, deliver)
+    a, b = await asyncio.gather(
+        run_once(store, pipeline, batch_size=4, alert=no_alert),
+        run_once(store, pipeline, batch_size=4, alert=no_alert),
+    )
+
+    assert a + b == n
+    assert a > 0 and b > 0  # both workers actually took part
+    assert sorted(delivered) == list(range(n))  # each event exactly once
+    assert (await store.count_by_status())["delivered"] == n
+    assert await store.claim(limit=10, lease_seconds=60) == []

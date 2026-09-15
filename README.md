@@ -247,7 +247,7 @@ others. `tests/adapters/test_registry.py` will check Protocol conformance.
 ```bash
 ruff check .
 pytest -q                     # unit suite, no network
-TRACEFLOW_TEST_DB_URL=postgresql://... pytest -q   # also runs the Postgres-backed store tests
+TEST_DB_URL=postgresql://... pytest -q   # also runs the Postgres-backed store tests
 ```
 
 CI (`.github/workflows/ci.yml`) applies the migrations to a fresh Postgres,

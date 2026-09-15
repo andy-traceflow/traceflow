@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
 
 jobs:
@@ -30,7 +30,7 @@ jobs:
       PGUSER: postgres
       PGPASSWORD: postgres
       PGDATABASE: sia_kit_test
-      TRACEFLOW_TEST_DB_URL: postgresql://postgres:postgres@localhost:5432/sia_kit_test
+      TEST_DB_URL: postgresql://postgres:postgres@localhost:5432/sia_kit_test
 
     steps:
       - uses: actions/checkout@v4

@@ -58,7 +58,7 @@ src/app/
   adapters/{monday,hubspot,notion,slack,sheets}.py
 tests/fakes.py          InMemoryEventStore mirroring Postgres semantics
 tests/adapters/         every adapter via httpx.MockTransport
-tests/test_events_store_db.py   Postgres-backed; skips without TRACEFLOW_TEST_DB_URL, runs in CI
+tests/test_events_store_db.py   Postgres-backed; skips without TEST_DB_URL, runs in CI
 ```
 
 ## Conventions
