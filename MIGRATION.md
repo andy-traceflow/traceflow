@@ -258,3 +258,72 @@ construction and fail closed; the record is a plain dict of destination display 
 - `pytest tests/ -q` → **209 passed, 7 skipped, 3.09s** (7 = CI-only Postgres tests). No network.
 - The template is now usable for an engagement: every item on the Phase 6 list exists, and
   `README.md` is the path from `git clone` to a delivered test order.
+
+---
+
+## Phase 7 — Tests (verification pass)
+
+Every test on the Phase 7 list already existed by the end of Phase 5. Where each one lives:
+
+| Requirement | Test |
+|---|---|
+| HMAC valid / invalid / missing header / missing secret fails closed | `tests/test_shopify_signature_dependency.py` (Phase 2) |
+| Replay outside the timestamp window | `tests/test_webhook_signature.py::test_timestamped_signature_rejects_stale` (preserved from the original suite) |
+| Same `webhook_id` twice → exactly one row | `tests/test_shopify_webhook.py` (in-memory) + `tests/test_events_store_db.py::test_same_webhook_id_creates_exactly_one_row` (Postgres unique constraint) |
+| Failed delivery stays retryable, redelivery not suppressed | `tests/test_worker.py::test_redelivery_of_a_failed_event_is_absorbed_and_original_stays_retryable` + the Postgres twin |
+| Backoff schedule respected | `tests/test_worker.py::test_backoff_*`, `test_failed_event_is_not_claimable_until_backoff_elapses` |
+| Permanent 4xx → straight to `dead` | `tests/test_worker.py::test_permanent_4xx_goes_straight_to_dead_with_one_alert` |
+| 5 transient → exactly one `dead` row and one alert | `tests/test_worker.py::test_five_transient_failures_produce_exactly_one_dead_row_and_one_alert` |
+| Two workers never deliver the same event twice | `tests/test_events_store_db.py::test_concurrent_claims_never_overlap` (claim query) + **new** `test_two_workers_running_simultaneously_never_deliver_the_same_event_twice` (two `run_once()` loops end to end) |
+| `mapping.yaml` fixture → expected payload incl. `fallback:` | `tests/test_mapping.py::test_fixture_mapping_produces_expected_record` |
+| < 30s, no network | 2.5–3s. **Now enforced**, not assumed — see below |
+
+| Op | Path | Reason |
+|---|---|---|
+| E | `tests/conftest.py` | Autouse guard patches `httpx.HTTPTransport.handle_request` / `AsyncHTTPTransport.handle_async_request` to raise, so any test that reaches the real network fails loudly (proven with a throwaway test). `MockTransport` and Starlette's `TestClient` don't go through those classes. `TRACEFLOW_TEST_DB_URL` → `TEST_DB_URL` — the last functional TraceFlow reference in the tree |
+| E | `tests/test_events_store_db.py` | + two-workers end-to-end test (30 events, `batch_size=4`, both workers participate, each event delivered exactly once, table ends fully `delivered`). **Fixed** `test_expired_lease_is_reclaimed`: it asserted the opposite of its own comment (unpacked a row where a live lease correctly yields none). Caught by CI on the first push — the store was right, the test was wrong |
+| E | `.github/workflows/ci.yml`, `README.md`, `CLAUDE.md` | CI triggers on pushes to every branch (was `main` + PRs only — the branch push would have run nothing). Env var rename |
+
+### Phase 7 result
+- Leftover scan (`git grep -i` for `client_id`, tenant, traceflow, RLS, twilio, lead, qualif, GHL, retool, demo): every remaining hit is a doc sentence stating that there is *no* `client_id`/tenant, or `pyproject.toml`'s distribution `name = "traceflow"` (left as-is — "do not rename the repo or the Python package"; flagged for a decision).
+- Local: `pytest -q` → **209 passed, 8 skipped, 3.0s**, no warnings, ruff clean.
+- **CI on `sia-kit/migration` (run 35012678000, `5e72f48`): migrations applied, `ruff` clean,
+  `mapping.yaml` validated, `pytest -v` → 217 passed, 0 skipped, 0 failed, 2.47s.** All 8
+  Postgres-backed tests ran and passed.
+
+---
+
+## Summary
+
+| | `main` @ `7889fe2` (TraceFlow) | `sia-kit/migration` @ `5e72f48` (SIA Kit) |
+|---|---|---|
+| Tracked files | 218 | 72 |
+| `src/` lines | 13,801 | 3,282 |
+| Tests | 555 passed + 50 skipped (RLS/portal, DB-only) | 217 passed, 0 skipped (CI) |
+| Tables | 26 migrations, every table `client_id`-scoped, RLS | 1 (`events`), no `client_id` |
+| Config | `client_configs`, `client_field_mappings`, `client_webhook_configs` rows | env vars + `mapping.yaml` |
+| Webhook handler | verify (per-tenant secret via HTTP to Supabase, dev bypass) → `BackgroundTask` | verify (env secret, no bypass) → insert → 200 |
+| Retry / dead-letter | none | 1m/5m/15m/1h/6h ±20%, permanent vs transient, `dead` + Slack alert, replay endpoint |
+| Dedupe | in-memory TTL, recorded before processing | `UNIQUE (source, webhook_id)` + `ON CONFLICT DO NOTHING` |
+| Destinations | GHL, HubSpot, Monday (lead-shaped) | Monday, HubSpot, Notion, Slack, Sheets (`Destination` Protocol) |
+| Net diff | | 239 files, +6,511 / −37,694 |
+
+Commits, one per phase: `bae6989` (1) · `ef906e8` (2) · `5c75679` (3) · `8cbd373` (4) ·
+`5937bac` (5) · `2d7a268` (6) · `9fc063d` (7) · `5e72f48` (test fix).
+
+### Decisions made beyond the letter of the spec (all flagged in their phase)
+- `shop_domain` column added to `events`; `CHECK` on `status`; `next_retry_at` doubles as the processing lease.
+- Insert failure in the webhook handler → **503**, not 200. Missing `X-Shopify-Webhook-Id` → body-hash id.
+- Missing secret per-request → 500 (Shopify retries, so fixing the env var recovers the window).
+- `SUPABASE_DB_URL`, `DESTINATION`, `ADMIN_TOKEN` are required at startup alongside the secret; `ALERT_WEBHOOK_URL` is optional with a boot warning.
+- Registry is lazy construct-once. Adapters raise instead of returning `None`. `_key` upsert support; record contract with `_name`/`_key`/`_line_items`.
+- `mapping.yaml` gained `key:` (approved) and `name:`; the transform guards source/topic and dead-letters mismatches.
+- `/health`: 503 only on DB failure; destination outage is 200 `degraded`; destination check cached 60s.
+- `structlog` dropped for a stdlib `JsonFormatter`; `pyjwt[crypto]` and `pyyaml` added.
+- All migrations, `docs/`, and `.claude/skills/` deleted rather than edited (approved).
+
+### Not done / for the owner
+- `pyproject.toml` `name = "traceflow"` — rename to `sia-kit` if you consider the distribution name fair game.
+- No deploy has been performed; `README.md` steps 6–8 (Render Blueprint, Shopify webhook registration, test order) are written but unexercised against a live store.
+- `RUNBOOK.md` has `<angle-bracket>` placeholders to fill per engagement.
+- The old TraceFlow Supabase project still holds the retired schema at migration head 026; nothing on this branch touches it.
