@@ -39,6 +39,13 @@ with two `mapping.yaml`s — never a branch in code, never a row in a table.
 The old rule "every table has `client_id`, every query filters by it" is
 inverted here on purpose.
 
+**This repository is the template. Nothing deploys `main`.** Each engagement
+is a new repo created from it (GitHub "Use this template"), with its own
+Render Blueprint (`render.yaml` with `CLIENT` replaced), its own Postgres,
+its own env group. The Render service `traceflow-api` that used to track
+`main` has auto-deploy off and belongs to the retired product; do not wire
+this repo to any service.
+
 ## Map
 
 ```

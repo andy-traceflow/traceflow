@@ -1,6 +1,15 @@
+# Per-engagement Render Blueprint. Before deploying a client copy, replace
+# every CLIENT below with the client's slug (e.g. sia-kit-acme-api): Render
+# service and env-group names are unique per workspace, so two clients with
+# the same names would collide.
+#
+# Plans: `starter` is the floor for the web service. Render's free tier spins
+# down after 15 minutes idle and cold-starts in 30-60s, which is longer than
+# Shopify's 5-second webhook timeout — Shopify would retry, so nothing is
+# lost, but every quiet-period order would arrive a minute late.
 services:
   - type: web
-    name: sia-kit-api
+    name: sia-kit-CLIENT-api
     runtime: python
     plan: starter
     region: oregon
@@ -12,15 +21,14 @@ services:
         value: production
       - key: PYTHON_VERSION
         value: "3.12"
-      - fromGroup: sia-kit-secrets
+      - fromGroup: sia-kit-CLIENT-secrets
 
   # Delivery worker — reads the events table, transforms, pushes to the
   # destination, retries with backoff. Pick ONE of the two shapes:
   #
-  # (a) always-on background worker: lowest delivery latency, second
-  #     paid service.
+  # (a) always-on background worker (~$7/mo): delivery within seconds.
   - type: worker
-    name: sia-kit-worker
+    name: sia-kit-CLIENT-worker
     runtime: python
     plan: starter
     region: oregon
@@ -31,13 +39,12 @@ services:
         value: production
       - key: PYTHON_VERSION
         value: "3.12"
-      - fromGroup: sia-kit-secrets
+      - fromGroup: sia-kit-CLIENT-secrets
   #
-  # (b) cron that drains the queue every few minutes: near-free, adds up
-  #     to one interval of latency. Delete the worker block above and
-  #     uncomment this one.
+  # (b) cron that drains the queue every 5 minutes (~$1/mo): up to 5 minutes
+  #     of latency. Delete the worker block above and uncomment this one.
   # - type: cron
-  #   name: sia-kit-worker
+  #   name: sia-kit-CLIENT-worker
   #   runtime: python
   #   schedule: "*/5 * * * *"
   #   buildCommand: pip install -e .
@@ -47,10 +54,10 @@ services:
   #       value: production
   #     - key: PYTHON_VERSION
   #       value: "3.12"
-  #     - fromGroup: sia-kit-secrets
+  #     - fromGroup: sia-kit-CLIENT-secrets
 
 envVarGroups:
-  - name: sia-kit-secrets
+  - name: sia-kit-CLIENT-secrets
     envVars:
       - key: SUPABASE_DB_URL
         sync: false

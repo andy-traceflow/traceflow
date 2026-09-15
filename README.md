@@ -36,36 +36,56 @@ Three principles, in priority order:
 
 ---
 
-## Fork and deploy in 30 minutes
+## The deployment model — read this once
+
+**This repository is a template. Nothing deploys `main`.** Every client
+engagement is its own copy of the repo, its own Render services, its own
+Postgres, its own env vars. Never connect a Render service to this
+repository's `main` with auto-deploy on — a template commit is not a client
+release.
+
+Per engagement, what it costs to run (the maintenance retainer covers it):
+
+| Piece | Plan | ~Cost |
+|---|---|---|
+| Render web service | Starter | $7/mo — **not free**: the free tier spins down after 15 min idle and cold-starts in 30–60 s, longer than Shopify's 5 s webhook timeout. Shopify retries, so nothing is lost, but every quiet-period order lands a minute late. |
+| Render worker | cron `--once` every 5 min, or always-on Starter | $1/mo or $7/mo |
+| Postgres | Supabase free, Neon free, or Render Postgres Basic | $0–6/mo. Supabase free **pauses projects after ~7 days without activity** and a paused DB means 503s until someone unpauses it; for a low-volume store prefer Neon (resumes on connect) or Render Postgres. |
+
+## New engagement in 30 minutes
 
 ### 0. You need
 
 - Python 3.11+
-- A Postgres database (a free Supabase project is fine)
 - A Render account
 - The destination's credentials (see `.env.example` for exactly where each one comes from)
 - Admin access to the client's Shopify store
 
-### 1. Clone and sanity-check
+### 1. Copy the template and sanity-check
+
+Use GitHub's **Use this template → Create a new repository** on this repo
+(gives a clean history, no migration log), named `sia-kit-<client>`. Then:
 
 ```bash
-git clone <your-fork> sia-kit-<client>
+git clone <the-new-repo> sia-kit-<client>
 cd sia-kit-<client>
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
-pytest -q                                            # ~180 tests, no network, <5s
+pytest -q                                            # ~210 tests, no network, <5s
 ```
 
 ### 2. Create the database
 
-Create a Supabase project (or any Postgres). Copy the connection URI
-(Supabase: **Connect → Session pooler**, URI form, replace the password), then:
+Create a **new** Postgres for this client — never reuse another client's.
+Copy the connection URI (Supabase: **Connect → Session pooler**, URI form,
+replace the password; Neon/Render: the dashboard's connection string), then:
 
 ```bash
 SUPABASE_DB_URL='postgresql://...' python scripts/apply_migrations.py
 ```
 
-That creates the `events` table. Re-running is safe.
+That creates the `events` table. Re-running is safe. (The env var is named
+`SUPABASE_DB_URL` for historical reasons; any Postgres DSN works.)
 
 ### 3. Set the environment
 
@@ -135,10 +155,23 @@ localhost:8000/events?status=dead` shows the stored error.
 
 ### 6. Deploy to Render
 
-`render.yaml` is a Blueprint: **Render → New → Blueprint → your fork**. It
-creates the web service, the worker, and an env group named
-`sia-kit-secrets`. Fill the group with the same values as your `.env`
-(`ENVIRONMENT=production` is set by the Blueprint). Deploy.
+First, in `render.yaml`, replace every `CLIENT` with the client's slug
+(`sia-kit-acme-api`, …) — Render service names are unique per workspace, so
+two clients cannot share them. Commit that.
+
+`render.yaml` is a Blueprint: **Render → New → Blueprint → the client's
+repo**. It creates the web service, the worker, and the env group. Fill the
+group with the same values as your `.env` (`ENVIRONMENT=production` is set
+by the Blueprint). Deploy.
+
+If the deploy fails at boot, the log says exactly which required variable is
+missing — that is the fail-closed check, not a bug:
+
+```
+RuntimeError: refusing to start: missing required environment variables: SHOPIFY_WEBHOOK_SECRET, ...
+```
+
+Set it and redeploy. Then:
 
 ```bash
 curl https://<service>.onrender.com/health
@@ -148,7 +181,7 @@ You want `"status": "ok"` with `"checks": {"database": true, "destination": true
 
 **Cheaper shape:** delete the `worker` block in `render.yaml` and uncomment
 the `cron` block — it runs `python -m app.worker --once` every 5 minutes for
-pennies, at the cost of up to 5 minutes of delivery latency.
+about a dollar a month, at the cost of up to 5 minutes of delivery latency.
 
 ### 7. Register the Shopify webhook
 
@@ -176,6 +209,26 @@ The newest event should be `delivered` within seconds (always-on worker) or
 one cron interval, with `external_id` set to the destination's record id —
 and the record visible in the destination. Done. Hand the client
 `RUNBOOK.md`.
+
+### Per-engagement checklist
+
+- [ ] New repo from the template (`sia-kit-<client>`), not a fork
+- [ ] New Postgres, migration applied
+- [ ] `render.yaml`: every `CLIENT` replaced with the client slug
+- [ ] `mapping.yaml`: `destination:` matches `DESTINATION`, every `to:` exists in the destination
+- [ ] Render env group filled: 4 required + destination block + `ALERT_WEBHOOK_URL` + `BASE_URL`
+- [ ] `/health` → `ok`, both checks `true`
+- [ ] Shopify webhook registered, **Send test notification** → 200
+- [ ] Test order → `delivered`, record visible in the destination
+- [ ] `RUNBOOK.md` placeholders filled and sent to the client
+- [ ] Uptime monitor pointed at `/health`; alert channel confirmed
+
+### Updating a client after the template changes
+
+Client repos do not track the template automatically. To bring a fix over:
+`git remote add template <this-repo>`, `git fetch template`, cherry-pick
+the commit(s), run the tests, deploy. Keep template changes small and
+self-contained for exactly this reason.
 
 ---
 
