@@ -1,0 +1,68 @@
+# Test fixture — exercises every feature of the mapping schema.
+source: shopify
+topic: orders/create
+destination: notion
+key: "Order ID"
+name: "$.name"
+
+fields:
+  - from: "$.id"
+    to: "Order ID"
+    type: title
+    transform: to_str
+    required: true
+  - from: "$.total_price"
+    to: "Total"
+    type: number
+    transform: to_decimal
+  - from: "$.customer.email"
+    to: "Email"
+    type: email
+  - from: "$.shipping_address.company"        # empty string in the fixture
+    to: "Company"
+    type: rich_text
+    fallback: "$.billing_address.company"     # → resolves here
+  - from: "$.created_at"
+    to: "Placed"
+    type: date
+    transform: to_date
+  - from: "$.financial_status"
+    to: "Payment"
+    type: select
+  - from: "shipping_address.phone"            # dotted path, chained named transforms
+    to: "Phone"
+    type: phone_number
+    transform: [strip, digits_only]
+  - from: "$.tags"
+    to: "Tags"
+    type: multi_select
+    transform: {type: split, separator: ", "}
+  - from: "$.note"                            # null in fixture, no fallback → omitted
+    to: "Note"
+    type: rich_text
+  - from: "$.currency"
+    to: "Currency"
+    type: select
+    transform: {type: value_map, mapping: {USD: "US Dollar"}}
+  - from: "$.does_not_exist"
+    to: "Source"
+    type: text
+    default: "Shopify"
+  - from: "$.financial_status"
+    to: "Paid?"
+    type: checkbox
+
+line_items:
+  enabled: true
+  from: "$.line_items"
+  name: "$.title"
+  fields:
+    - from: "$.quantity"
+      to: "Quantity"
+      type: number
+    - from: "$.sku"
+      to: "SKU"
+      type: rich_text
+    - from: "$.variant_title"
+      to: "Variant"
+      type: rich_text

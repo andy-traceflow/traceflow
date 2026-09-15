@@ -16,7 +16,8 @@ dependencies = [
     "pyjwt[crypto]>=2.10.0",  # RS256 service-account assertion for the Google Sheets adapter
     "structlog>=24.4.0",  # structured JSON event-transition logs (Phase 6)
     "python-dotenv>=1.0.1",  # pydantic-settings env_file support
-    "jsonpath-ng>=1.6.1",  # mapping.yaml `from:` expressions (Phase 5)
+    "jsonpath-ng>=1.6.1",  # mapping.yaml `from:` expressions
+    "pyyaml>=6.0.2",  # mapping.yaml
     "sentry-sdk[fastapi]>=2.18.0",
 ]
 
@@ -27,6 +28,7 @@ dev = [
     "pytest-mock>=3.14.0",
     "ruff>=0.7.0",
     "mypy>=1.13.0",
+    "types-pyyaml>=6.0.12",
 ]
 
 [build-system]

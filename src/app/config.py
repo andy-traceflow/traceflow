@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     # app refuses to start if any are missing.
     destination: str = ""
 
+    # Path to the mapping file. Default: mapping.yaml in the working
+    # directory, falling back to the repo root. Only set this to point a
+    # test or a one-off run at a different file.
+    mapping_path: str = ""
+
     # Shopify webhook HMAC secret. Shopify admin → Settings → Notifications →
     # Webhooks → the "signed with" value at the bottom of the page. REQUIRED:
     # the app refuses to start without it (see require_startup_settings).

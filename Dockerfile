@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml ./
+COPY pyproject.toml mapping.yaml ./
 COPY src/ ./src/
 
 RUN pip install --upgrade pip && pip install -e .

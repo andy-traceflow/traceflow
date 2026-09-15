@@ -197,3 +197,29 @@ construction and fail closed; the record is a plain dict of destination display 
 - The branch is now functional end-to-end: webhook → `events` row → worker → any of five
   destinations. The transform is still `passthrough` (raw Shopify payload keys as the record) —
   Phase 5 supplies `mapping.yaml`.
+
+---
+
+## Phase 5 — Replace DB-backed field mappings with a file
+
+| Op | Path | Reason |
+|---|---|---|
+| D | `src/app/services/field_mappings.py` | Read `client_field_mappings` rows per tenant (table already gone with the migrations). **Carried over verbatim** into `app.mapping.apply_transform`: the dict-form transform vocabulary (`value_map`, `regex_replace`, `numeric_scale`, `concatenate`, `split`, unknown → warn + pass through). **Dropped**: `resolve_mappings` (DB), `FieldMapping` dataclass, `dotted_qualification_data` (flattened lead qualification fields — retired domain; the *idea* survives as dotted `from:` paths), `apply_inverse_transform` (only served the deleted `parse_webhook` paths) |
+| D | `tests/services/test_field_mappings.py`, `tests/services/` | 12 tests; the 9 that cover surviving behavior are re-homed in `tests/test_mapping.py` (the 3 inverse-transform tests go with the function). Package dir was otherwise empty |
+| + | `mapping.yaml` | Repo-root template per the spec, **plus** `key:` (approved — names the `to` field to upsert on; becomes `_key`) and `name:` (path for `_name`). Heavily commented — it is the file a fork edits |
+| + | `src/app/mapping.py` | Pydantic v2 schema (`Mapping` / `FieldSpec` / `LineItemsSpec`, `extra="forbid"`) validated at startup; `load_mapping()` raises `MappingError` with a readable per-field message on missing file, bad YAML, non-object root, unknown keys, bad `type`, unknown transform, bad JSONPath, duplicate `to`, `key` not naming a field. `resolve_path()`: JSONPath via `jsonpath_ng` (kept) — 0 matches → None, 1 → value, n → list — or dotted paths. Named transforms (`to_decimal`, `to_int`, `to_str`, `strip`, `upper`, `lower`, `title_case`, `digits_only`, `to_bool`, `to_date`, `join`, `first`; chainable as a list) alongside the dict form. `coerce()` by declared `type`; failure → `TransformError` (permanent). `build_record()` → adapter record with `_name` / `_key` / `_line_items`; empty fields are omitted; `required: true` → `TransformError`. `transform_for()` guards source/topic — an event for a topic the mapping doesn't handle dead-letters with an alert naming both, rather than silently producing garbage |
+| E | `src/app/pipeline.py` | `build_pipeline()` loads the mapping, cross-checks `mapping.destination == DESTINATION` (RuntimeError if not), then wires `transform_for(mapping)` + `adapter.upsert_record` |
+| E | `src/app/main.py` | Lifespan calls `build_pipeline()` as the startup check (replaces the bare `get_adapter`) — a malformed mapping now fails the web deploy too, not just the worker |
+| E | `src/app/config.py` | `mapping_path` (optional; default `mapping.yaml` in CWD, then repo root) |
+| E | `pyproject.toml` | `pyyaml` added; `types-pyyaml` in dev |
+| E | `Dockerfile` | Copies `mapping.yaml` into the image — it only copied `src/`, so a Docker deploy would have failed at boot |
+| E | `.env.example` | `MAPPING_PATH`; `DESTINATION` comment notes it must match the file |
+| + | `tests/fixtures/shopify_order.json`, `tests/fixtures/mapping.yaml` | Realistic `orders/create` payload (empty shipping company, populated billing company, null variant, null note) and a mapping exercising every schema feature |
+| + | `tests/test_mapping.py` | 45 tests: fixture → exact expected record incl. `fallback:`, `default:`, dotted path, chained transforms, dict-form transforms, `_line_items` with per-item `_name`, omitted empties; fallback only when `from` empty; **repo-root `mapping.yaml` loads and maps the fixture**; `transform_for` topic/source guard; required-missing and uncoercible → `TransformError`; 14 invalid-mapping cases fail loudly; `resolve_path` JSONPath/dotted; the 9 carried-over `apply_transform` tests + 15 named-transform cases + chaining |
+| R | `tests/test_pipeline.py` | Now covers mapping loading, destination cross-check, and transform → deliver through a registered fake adapter |
+
+### Phase 5 result
+- `ruff check .` → clean.
+- `pytest tests/ -q` → **179 passed, 6 skipped, 2.98s** (6 = CI-only Postgres tests). No network.
+- Configuration is now fully env vars + `mapping.yaml`. No `client_configs`, no `field_mappings`,
+  no `client_webhook_configs` — and no code path reads configuration from the database.

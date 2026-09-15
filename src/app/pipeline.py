@@ -1,12 +1,15 @@
 """The transform → deliver pipeline the worker runs on each event, and the
 exception types adapters use to tell the worker how to react.
 
-`build_pipeline()` resolves the destination from DESTINATION via the
-adapter registry. Phase 5 replaces `passthrough` with the mapping.yaml
-transform.
+`build_pipeline()` loads mapping.yaml, resolves the destination from
+DESTINATION via the adapter registry, and cross-checks the two. It is
+called at boot by both the web service and the worker, so every
+configuration mistake refuses the process instead of dead-lettering
+the first event.
 
-This module imports nothing from app.adapters at module level — adapters
-import the error types from here, so the dependency points one way.
+This module imports nothing from app.adapters or app.mapping at module
+level — both import the error types from here, so dependencies point
+one way.
 """
 
 from __future__ import annotations
@@ -52,13 +55,23 @@ def passthrough(event: Event) -> dict[str, Any]:
 
 
 def build_pipeline() -> Pipeline:
-    """Construct the production pipeline from environment configuration.
+    """Construct the production pipeline from mapping.yaml + environment.
 
-    Raises ValueError (incl. AdapterConfigError) when DESTINATION is unknown
-    or its credentials are missing — callers run this at boot, fail closed.
+    Raises MappingError for a missing/invalid mapping, ValueError (incl.
+    AdapterConfigError) for an unknown DESTINATION or missing credentials,
+    and RuntimeError when mapping.yaml's `destination` disagrees with
+    DESTINATION. Callers run this at boot: fail closed.
     """
     from app.adapters.registry import get_adapter  # local: keeps adapters → pipeline one-way
     from app.config import get_settings
+    from app.mapping import load_mapping, transform_for
 
-    destination = get_adapter(get_settings().destination)
-    return Pipeline(transform=passthrough, deliver=destination.upsert_record)
+    settings = get_settings()
+    mapping = load_mapping(settings.mapping_path or None)
+    if mapping.destination != settings.destination:
+        raise RuntimeError(
+            f"mapping.yaml says destination: {mapping.destination!r} but DESTINATION="
+            f"{settings.destination!r} — they must agree"
+        )
+    destination = get_adapter(settings.destination)
+    return Pipeline(transform=transform_for(mapping), deliver=destination.upsert_record)

@@ -14,9 +14,9 @@ import sentry_sdk
 from fastapi import FastAPI
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from app.adapters.registry import get_adapter
 from app.config import get_settings, require_startup_settings
 from app.db import close_pool, init_pool
+from app.pipeline import build_pipeline
 from app.routers import health
 from app.webhooks import shopify
 
@@ -30,10 +30,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Fail closed: a deploy without its webhook signing secret must not come up.
     require_startup_settings(settings)
-    # Construct the destination adapter now so missing credentials refuse the
-    # boot instead of dead-lettering the first event.
-    destination = get_adapter(settings.destination)
-    logger.info("destination adapter ready", extra={"destination": destination.name})
+    # Load mapping.yaml and construct the destination adapter now, so a bad
+    # mapping or missing credentials refuse the boot instead of
+    # dead-lettering the first event. The web service never runs the
+    # pipeline itself — this is purely the startup check.
+    build_pipeline()
+    logger.info("mapping + destination validated", extra={"destination": settings.destination})
 
     if settings.sentry_dsn:
         sentry_sdk.init(
