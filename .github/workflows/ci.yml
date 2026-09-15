@@ -2,24 +2,21 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
 
 jobs:
   test:
-    name: Lint + tests (incl. tenant isolation)
+    name: Lint + tests
     runs-on: ubuntu-latest
 
     services:
       postgres:
-        # pgvector/pgvector ships Postgres + the `vector` extension our
-        # KB migrations need. Standard postgres:16 wouldn't apply
-        # migration 005.
-        image: pgvector/pgvector:pg16
+        image: postgres:16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: traceflow_test
+          POSTGRES_DB: sia_kit_test
         ports:
           - 5432:5432
         options: >-
@@ -32,8 +29,8 @@ jobs:
       PGHOST: localhost
       PGUSER: postgres
       PGPASSWORD: postgres
-      PGDATABASE: traceflow_test
-      TRACEFLOW_TEST_DB_URL: postgresql://postgres:postgres@localhost:5432/traceflow_test
+      PGDATABASE: sia_kit_test
+      TEST_DB_URL: postgresql://postgres:postgres@localhost:5432/sia_kit_test
 
     steps:
       - uses: actions/checkout@v4
@@ -48,7 +45,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-          pip install pyyaml  # used by scripts/onboard_client.py
 
       - name: Wait for Postgres
         run: |
@@ -57,21 +53,20 @@ jobs:
             sleep 1
           done
 
-      - name: Bootstrap Supabase auth stubs
-        run: psql -h localhost -U postgres -d traceflow_test -f tests/sql/bootstrap_supabase_stubs.sql
-
       - name: Apply migrations in order
         run: |
           set -e
-          for f in $(ls migrations/*.sql | sort); do
+          for f in $(ls migrations/*.sql 2>/dev/null | sort); do
             echo "==> applying $f"
-            psql -h localhost -U postgres -d traceflow_test -v ON_ERROR_STOP=1 -f "$f"
+            psql -h localhost -U postgres -d sia_kit_test -v ON_ERROR_STOP=1 -f "$f"
           done
 
       - name: Lint
         run: ruff check .
 
-      # The full test suite. tests/test_tenant_isolation.py runs against
-      # the bootstrapped Postgres and HARD-FAILS on any cross-tenant leak.
+      # A fork with a broken mapping.yaml must fail here, not at deploy.
+      - name: Validate mapping.yaml
+        run: python -c "from app.mapping import load_mapping; print(load_mapping())"
+
       - name: Run tests
         run: pytest -v

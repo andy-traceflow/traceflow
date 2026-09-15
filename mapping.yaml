@@ -1,0 +1,78 @@
+# mapping.yaml — what this deployment sends where.
+#
+# One Shopify event → one destination record. Edit this file for each
+# engagement; nothing else about the transform lives in code. It is
+# validated at startup: a mistake here stops the deploy, not the first
+# order. Full reference: src/app/mapping.py.
+#
+#   from:      where the value comes from in the Shopify payload — JSONPath
+#              ("$.customer.email") or a dotted path ("customer.email")
+#   to:        the destination's field name exactly as it appears there
+#              (Notion property, Monday column title, Sheets header cell,
+#              HubSpot property internal name)
+#   type:      title | text | rich_text | number | email | phone_number | url
+#              | date | select | multi_select | relation | checkbox
+#   transform: to_decimal | to_int | to_str | strip | upper | lower |
+#              title_case | digits_only | to_bool | to_date | join | first
+#              (or a list applied in order)
+#   fallback:  a second path tried when `from` is empty
+#   default:   a literal used when both are empty
+#   required:  true → an empty value dead-letters the event with an alert
+
+source: shopify
+topic: orders/create
+destination: notion
+
+# The field (by its `to` name) that identifies a record downstream. With
+# this set, a second event carrying the same value updates the existing
+# record instead of creating a duplicate. Remove it for append-only
+# destinations (slack, sheets) or when every event should be a new row.
+key: "Order ID"
+
+# What to call the record: Monday item name, Slack header, Notion title
+# when no field targets the title property.
+name: "$.name"
+
+fields:
+  - from: "$.id"
+    to: "Order ID"
+    type: title
+    transform: to_str
+    required: true
+
+  - from: "$.total_price"
+    to: "Total"
+    type: number
+    transform: to_decimal
+
+  - from: "$.customer.email"
+    to: "Email"
+    type: email
+    fallback: "$.email"
+
+  - from: "$.shipping_address.company"
+    to: "Company"
+    type: rich_text
+    fallback: "$.billing_address.company"
+
+  - from: "$.created_at"
+    to: "Placed"
+    type: date
+    transform: to_date
+
+  - from: "$.financial_status"
+    to: "Payment"
+    type: select
+
+line_items:
+  enabled: true
+  to: subitems          # Monday → subitems, Slack → bullet list; Notion/Sheets/HubSpot ignore
+  from: "$.line_items"
+  name: "$.title"
+  fields:
+    - from: "$.quantity"
+      to: "Quantity"
+      type: number
+    - from: "$.sku"
+      to: "SKU"
+      type: rich_text

@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: traceflow-api
+    name: sia-kit-api
     runtime: python
     plan: starter
     region: oregon
@@ -12,100 +12,93 @@ services:
         value: production
       - key: PYTHON_VERSION
         value: "3.12"
-      # Public read-only demo at /demo (web service ONLY — never on the crons
-      # below, which must operate on real tenant data, not demo fixtures).
-      - key: DEMO_MODE
-        value: "true"
-      - fromGroup: traceflow-secrets
+      - fromGroup: sia-kit-secrets
 
-  - type: cron
-    name: adapter-health-check
+  # Delivery worker — reads the events table, transforms, pushes to the
+  # destination, retries with backoff. Pick ONE of the two shapes:
+  #
+  # (a) always-on background worker: lowest delivery latency, second
+  #     paid service.
+  - type: worker
+    name: sia-kit-worker
     runtime: python
-    schedule: "0 * * * *"  # hourly
+    plan: starter
+    region: oregon
     buildCommand: pip install -e .
-    startCommand: python -m app.jobs.adapter_health
+    startCommand: python -m app.worker
     envVars:
       - key: ENVIRONMENT
         value: production
       - key: PYTHON_VERSION
         value: "3.12"
-      - fromGroup: traceflow-secrets
-
-  - type: cron
-    name: daily-digest
-    runtime: python
-    schedule: "0 * * * *"  # hourly; each client is gated to its own 06:00 local time
-    buildCommand: pip install -e .
-    startCommand: python -m app.jobs.daily_digest
-    envVars:
-      - key: ENVIRONMENT
-        value: production
-      - key: PYTHON_VERSION
-        value: "3.12"
-      - fromGroup: traceflow-secrets
-
-  - type: cron
-    name: revenue-sync
-    runtime: python
-    schedule: "0 3 * * *"  # daily 03:00 UTC; CRM revenue readback (mode='crm' clients)
-    buildCommand: pip install -e .
-    startCommand: python -m app.jobs.revenue_sync
-    envVars:
-      - key: ENVIRONMENT
-        value: production
-      - key: PYTHON_VERSION
-        value: "3.12"
-      - fromGroup: traceflow-secrets
-
-  - type: cron
-    name: monthly-report
-    runtime: python
-    schedule: "0 * 1-5 * *"  # hourly on the 1st-5th; each client gated to its local 09:00, sent once per month
-    buildCommand: pip install -e .
-    startCommand: python -m app.jobs.monthly_report
-    envVars:
-      - key: ENVIRONMENT
-        value: production
-      - key: PYTHON_VERSION
-        value: "3.12"
-      - fromGroup: traceflow-secrets
+      - fromGroup: sia-kit-secrets
+  #
+  # (b) cron that drains the queue every few minutes: near-free, adds up
+  #     to one interval of latency. Delete the worker block above and
+  #     uncomment this one.
+  # - type: cron
+  #   name: sia-kit-worker
+  #   runtime: python
+  #   schedule: "*/5 * * * *"
+  #   buildCommand: pip install -e .
+  #   startCommand: python -m app.worker --once
+  #   envVars:
+  #     - key: ENVIRONMENT
+  #       value: production
+  #     - key: PYTHON_VERSION
+  #       value: "3.12"
+  #     - fromGroup: sia-kit-secrets
 
 envVarGroups:
-  - name: traceflow-secrets
+  - name: sia-kit-secrets
     envVars:
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_KEY
-        sync: false
-      - key: SUPABASE_ANON_KEY
-        sync: false
       - key: SUPABASE_DB_URL
         sync: false
-      - key: ANTHROPIC_API_KEY
+      # Required. The service refuses to boot without it (fail closed).
+      - key: SHOPIFY_WEBHOOK_SECRET
         sync: false
-      - key: OPENAI_API_KEY
+      # Required: monday | hubspot | notion | slack | sheets. Then set that
+      # adapter's credentials below; the others can stay unset.
+      - key: DESTINATION
         sync: false
-      - key: TWILIO_ACCOUNT_SID
+      - key: MONDAY_API_KEY
         sync: false
-      - key: TWILIO_AUTH_TOKEN
+      - key: MONDAY_BOARD_ID
         sync: false
-      - key: RESEND_API_KEY
+      - key: HUBSPOT_ACCESS_TOKEN
         sync: false
-      - key: NOTIFY_FROM_EMAIL
+      - key: HUBSPOT_OBJECT
         sync: false
-      - key: ADMIN_JWT_SECRET
+      - key: NOTION_API_KEY
         sync: false
-      - key: ALLOWED_ORIGINS
+      - key: NOTION_DATABASE_ID
+        sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_CHANNEL
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: GOOGLE_SHEET_ID
+        sync: false
+      - key: GOOGLE_SHEET_TAB
         sync: false
       # Host allow-list for TrustedHostMiddleware. Leave unset to disable the
-      # check; set to e.g. "app.traceflow.app,*.onrender.com" before serving on
-      # the custom domain. (Include the onrender host so Render health checks
-      # and the fallback URL keep working.)
+      # check; set to e.g. "*.onrender.com" so Render health checks keep working.
       - key: ALLOWED_HOSTS
+        sync: false
+      # Required. Bearer token for GET /events and POST /events/{id}/replay.
+      - key: ADMIN_TOKEN
+        sync: false
+      # Slack incoming webhook for dead-letter alerts. Strongly recommended.
+      - key: ALERT_WEBHOOK_URL
         sync: false
       - key: SENTRY_DSN
         sync: false
+      # Public URL of the web service; used in alert links.
       - key: BASE_URL
         sync: false
       - key: LOG_LEVEL
         value: INFO
+      - key: LOG_FORMAT
+        value: json

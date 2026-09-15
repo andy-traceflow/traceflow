@@ -1,8 +1,10 @@
 """Typed application settings loaded from environment variables.
 
-Per-client integration credentials live in client_configs.crm_credentials JSONB,
-NOT here. The settings in this file are platform-level (one TraceFlow installation,
-many tenants).
+Single-tenant: every setting here describes the one deployment this
+service is. Destination credentials (Monday, Notion, Slack, ...) are
+read by the adapter that needs them at construction time — see
+`src/app/adapters/`. The webhook signing secret is validated at startup
+(Phase 2), not per request.
 """
 
 from functools import lru_cache
@@ -18,49 +20,43 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     base_url: str = "http://localhost:8000"
 
-    # Supabase
-    supabase_url: str = ""
-    supabase_service_key: str = ""
-    supabase_anon_key: str = ""
-    supabase_db_url: str = ""  # direct Postgres DSN for asyncpg pool
+    # Database — direct Postgres DSN for the asyncpg pool. REQUIRED: without
+    # it the webhook would 200 and persist nothing, which is the exact
+    # failure this template exists to prevent.
+    supabase_db_url: str = ""
 
-    # AI providers
-    anthropic_api_key: str = ""
-    openai_api_key: str = ""
+    # Which adapter receives every event: monday | hubspot | notion | slack |
+    # sheets. The adapter reads its own credentials (see .env.example) and the
+    # app refuses to start if any are missing.
+    destination: str = ""
 
-    # Twilio
-    twilio_account_sid: str = ""
-    twilio_auth_token: str = ""
+    # Path to the mapping file. Default: mapping.yaml in the working
+    # directory, falling back to the repo root. Only set this to point a
+    # test or a one-off run at a different file.
+    mapping_path: str = ""
 
-    # Email transport
-    resend_api_key: str = ""
-    notify_from_email: str = "hello@traceflow.app"
+    # Shopify webhook HMAC secret. Shopify admin → Settings → Notifications →
+    # Webhooks → the "signed with" value at the bottom of the page. REQUIRED:
+    # the app refuses to start without it (see require_startup_settings).
+    shopify_webhook_secret: str = ""
 
-    # Security
-    admin_jwt_secret: str = ""
-    allowed_origins: str = ""
     # Host allow-list for TrustedHostMiddleware. Comma-separated; supports
-    # wildcards (e.g. "*.onrender.com"). Empty (default) disables the check —
-    # so existing deploys are unaffected until this is set. When set, localhost
-    # + testserver are always appended for dev/tests. Set it before exposing the
-    # app on app.traceflow.app.
+    # wildcards (e.g. "*.onrender.com"). Empty (default) disables the check.
+    # When set, localhost + testserver are always appended for dev/tests.
     allowed_hosts: str = ""
-    # Admin /login failure rate limiting. Default on; set
-    # ADMIN_LOGIN_RATE_LIMIT_ENABLED=false to disable (e.g. during live
-    # testing when repeated logins would otherwise trip the lockout).
-    admin_login_rate_limit_enabled: bool = True
 
-    # Demo mode — when true, serves a public no-login, read-only copy of the
-    # admin UI at /demo backed entirely by in-memory fixtures (no DB access).
-    # Web service only; never set on the cron services. See ADR / routers/demo.py.
-    demo_mode: bool = False
+    # Bearer token for GET /events and POST /events/{id}/replay. REQUIRED.
+    # Generate one: python -c "import secrets; print(secrets.token_urlsafe(32))"
+    admin_token: str = ""
+
+    # Slack incoming-webhook URL that receives one message per dead-lettered
+    # event. Optional but strongly recommended — without it, dead letters
+    # are only visible in the logs and on /health.
+    alert_webhook_url: str = ""
 
     # Observability
     sentry_dsn: str = ""
-
-    @property
-    def allowed_origins_list(self) -> list[str]:
-        return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
+    log_format: str = "json"  # json | text
 
     @property
     def allowed_hosts_list(self) -> list[str]:
@@ -82,3 +78,24 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+# Settings whose absence must stop the process, not degrade it. Checked once
+# in the lifespan handler so a misconfigured deploy fails at boot — never on
+# the first webhook, and never by silently skipping a check.
+REQUIRED_AT_STARTUP: tuple[str, ...] = (
+    "shopify_webhook_secret",
+    "supabase_db_url",
+    "destination",
+    "admin_token",
+)
+
+
+def require_startup_settings(settings: Settings | None = None) -> None:
+    """Raise RuntimeError naming every missing fail-closed setting."""
+    s = settings if settings is not None else get_settings()
+    missing = [name.upper() for name in REQUIRED_AT_STARTUP if not getattr(s, name)]
+    if missing:
+        raise RuntimeError(
+            "refusing to start: missing required environment variables: " + ", ".join(missing)
+        )

@@ -1,4 +1,4 @@
-"""FastAPI app entrypoint. Wires middleware, routers, lifecycle.
+"""FastAPI app entrypoint. Wires three routers and the lifecycle.
 
 Run locally:
     uvicorn app.main:app --reload --port 8000
@@ -7,33 +7,41 @@ Run locally:
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import sentry_sdk
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from jwt.algorithms import get_default_algorithms
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from starlette.responses import Response
-from starlette.types import Scope
 
-from app.config import get_settings
+from app.config import get_settings, require_startup_settings
 from app.db import close_pool, init_pool
-from app.middleware.tenant_resolver import tenant_resolver_middleware
-from app.routers import admin, calculator, demo, kb, kb_export
-from app.webhooks import crm, generic, shopify, twilio
+from app.log import configure_logging
+from app.pipeline import build_pipeline
+from app.routers import events, health
+from app.webhooks import shopify
 
+_settings = get_settings()
+configure_logging(_settings.log_level, _settings.log_format)
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Startup: init DB pool + Sentry. Shutdown: close DB pool."""
+    """Startup: validate fail-closed settings, mapping, adapter; init Sentry + DB pool."""
     settings = get_settings()
+
+    # Fail closed: a deploy without its webhook signing secret must not come up.
+    require_startup_settings(settings)
+    # Load mapping.yaml and construct the destination adapter now, so a bad
+    # mapping or missing credentials refuse the boot instead of
+    # dead-lettering the first event. The web service never runs the
+    # pipeline itself — this is purely the startup check.
+    build_pipeline()
+    logger.info("mapping + destination validated", extra={"destination": settings.destination})
+
+    if not settings.alert_webhook_url:
+        logger.warning("ALERT_WEBHOOK_URL not set — dead-lettered events will only appear in logs and /health")
 
     if settings.sentry_dsn:
         sentry_sdk.init(
@@ -51,104 +59,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(
-    title="TraceFlow API",
+    title="SIA Kit",
     version="0.1.0",
     lifespan=lifespan,
 )
 
-_settings = get_settings()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_settings.allowed_origins_list,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Reject requests with an unexpected Host header before they reach any handler.
-# Opt-in: only active when ALLOWED_HOSTS is set, so existing deploys are
-# unaffected until the app is exposed on its own domain (app.traceflow.app).
-# Set it to e.g. "app.traceflow.app,*.onrender.com" for the current setup.
+# Opt-in: only active when ALLOWED_HOSTS is set.
 if _settings.allowed_hosts_list:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=_settings.allowed_hosts_list)
 
-app.middleware("http")(tenant_resolver_middleware)
-
-# Webhook routes — tenant identified via path or payload
 app.include_router(shopify.router)
-app.include_router(twilio.router)
-app.include_router(crm.router)
-app.include_router(generic.router)
-
-# Tenant-scoped API routes — admin/portal-facing
-app.include_router(kb.router)
-app.include_router(kb_export.router)
-app.include_router(calculator.router)
-
-# Founder-only admin — cross-tenant, bypasses RLS, separate auth scope
-app.include_router(admin.router)
-
-# Public demo bootstrap (POST /api/demo-login). The route gates itself on
-# DEMO_MODE at request time, so it's safe to register unconditionally.
-app.include_router(demo.router)
-
-# Admin SPA (admin-ui/, built into src/app/static/admin). Static files are
-# public by design — the SPA renders its login screen until /api/admin/login
-# succeeds; all data sits behind the admin JWT. Mounted conditionally so dev
-# checkouts and CI without a built bundle still import cleanly.
-#
-# Cache strategy for atomic deploys: Vite emits hash-named assets, so they are
-# immutable and safe to cache for a year. index.html must NOT be cached — a
-# returning visitor would otherwise keep loading a stale shell that points at
-# the previous build's (now-deleted) asset hashes. Default StaticFiles sends no
-# Cache-Control, which browsers treat as heuristically cacheable, so set it.
-class _AdminStaticFiles(StaticFiles):
-    """StaticFiles with deploy-safe cache headers for the admin SPA."""
-
-    async def get_response(self, path: str, scope: Scope) -> Response:
-        response = await super().get_response(path, scope)
-        # Normalize separators — StaticFiles hands us OS-native paths (backslashes
-        # on Windows dev), so match on a forward-slash form to stay cross-platform.
-        is_asset = path.replace("\\", "/").startswith("assets/")
-        if is_asset and response.status_code in (200, 304):
-            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-        else:
-            # index.html (and the SPA fallback) — always revalidate so a new
-            # deploy's asset hashes are picked up on the next navigation.
-            response.headers["Cache-Control"] = "no-cache"
-        return response
-
-
-_ADMIN_UI_DIR = Path(__file__).parent / "static" / "admin"
-if _ADMIN_UI_DIR.is_dir():
-    app.mount("/admin", _AdminStaticFiles(directory=_ADMIN_UI_DIR, html=True), name="admin-ui")
-    # DEMO_MODE: serve the SAME bundle at /demo. The SPA detects the /demo path
-    # and auto-logs-in via /api/demo-login (read-only). Vite bakes base=/admin/,
-    # so its assets resolve to /admin/assets/* — already served above, same origin.
-    if _settings.demo_mode:
-        app.mount("/demo", _AdminStaticFiles(directory=_ADMIN_UI_DIR, html=True), name="demo-ui")
-        logger.info("DEMO_MODE on — public read-only demo mounted at /demo")
-else:  # pragma: no cover - depends on whether the bundle was built
-    logger.info("admin SPA bundle not found at %s — /admin not mounted", _ADMIN_UI_DIR)
-
-
-@app.get("/")
-def root() -> dict:
-    return {"status": "ok", "service": "traceflow-api"}
-
-
-@app.get("/health")
-def health() -> dict:
-    """Liveness + minimal deploy diagnostics.
-
-    Reports the git commit Render injected at build time and the JWT
-    algorithms PyJWT can actually verify — `cryptography` not being
-    installed silently disables ES256/RS256, so surfacing this here
-    catches that class of deploy regression.
-    """
-    return {
-        "status": "ok",
-        "environment": _settings.environment,
-        "git_commit": os.getenv("RENDER_GIT_COMMIT", "unknown")[:7],
-        "jwt_algorithms": sorted(get_default_algorithms().keys()),
-    }
+app.include_router(health.router)
+app.include_router(events.router)

@@ -1,15 +1,17 @@
-"""Vendor-neutral webhook signature verification helpers.
+"""Vendor-neutral webhook signature verification.
 
-Three patterns supported:
+Three pure verifiers (no IO — easy to unit-test):
   - base64 HMAC-SHA256 of raw body (Shopify-style)
   - hex HMAC-SHA256 of raw body
   - timestamped HMAC-SHA256 of `{ts}.{body}` with replay protection
     (Stripe-style — many providers use this shape)
 
-Verifiers are pure functions over (secret, body, signature). The
-`verify_signature_for_request()` dispatcher resolves the right
-verifier and the right secret based on the route and the client's
-config.
+Plus one request-level FastAPI dependency, `verify_shopify_signature`,
+declared explicitly on the webhook route. It fails closed: a missing
+secret, a missing header, or a mismatch all reject the request. The
+secret's presence is additionally enforced at startup
+(`app.config.require_startup_settings`) so a misconfigured deploy refuses
+to boot instead of silently accepting unsigned traffic on a public URL.
 """
 
 from __future__ import annotations
@@ -19,15 +21,14 @@ import hashlib
 import hmac
 import logging
 import time
-from uuid import UUID
 
-import httpx
-from fastapi import Request
+from fastapi import HTTPException, Request
 
-from app.config import Settings, get_settings
-from app.services.twilio_signature import verify_twilio_signature
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+SHOPIFY_HMAC_HEADER = "X-Shopify-Hmac-Sha256"
 
 
 # ---------------------------------------------------------------------------
@@ -99,83 +100,50 @@ def verify_timestamped_signature(
 
 
 # ---------------------------------------------------------------------------
-# Request-level dispatcher — used by tenant_resolver middleware
+# Request-level dependency — declared explicitly on the webhook route.
 # ---------------------------------------------------------------------------
 
-async def verify_signature_for_request(request: Request, client_id: UUID) -> None:
-    """Verify the inbound webhook against the per-client signing secret.
+async def verify_shopify_signature(request: Request) -> bytes:
+    """FastAPI dependency: verify the Shopify HMAC over the raw request body.
 
-    Raises PermissionError on failure (mapped to 401 by the middleware).
-    No-op if signature verification is disabled in development.
+    Returns the raw body bytes (also cached on `request.state._cached_body`)
+    so the handler never re-reads the stream.
 
-    Provider is inferred from the URL path. Body is read once and cached
-    on the request so downstream handlers don't pay the I/O cost again.
+    Fail-closed contract — there is no environment in which this is skipped:
+      - secret not configured → 500. A deployment bug, not a client error;
+        Shopify retries non-2xx for ~48h, so fixing the env var recovers
+        the events that arrived in the meantime.
+      - header missing/empty  → 401
+      - HMAC mismatch         → 401
+    Never logs the secret or the presented signature.
     """
-    path = request.url.path
     body = await _read_and_cache_body(request)
-    settings = get_settings()
 
-    # Twilio uses the platform auth token (not a per-client secret) and a
-    # URL+params signature scheme — handle it before the per-client path.
-    if path.startswith("/webhooks/twilio/"):
-        await _verify_twilio_request(request, settings)
-        return
-
-    secret = await _load_signing_secret(client_id, _infer_integration(path))
+    secret = get_settings().shopify_webhook_secret
     if not secret:
-        # In dev we let unsigned webhooks through to make local testing
-        # ergonomic. In prod we fail closed.
-        if settings.is_production:
-            raise PermissionError("no signing secret configured for tenant")
-        logger.warning(
-            "skipping signature check — no secret configured (dev only)",
-            extra={"path": path, "client_id": str(client_id)},
-        )
-        return
-
-    if path.startswith("/webhooks/shopify/"):
-        sig = request.headers.get("X-Shopify-Hmac-Sha256", "")
-        if not verify_hmac_sha256_base64(secret, body, sig):
-            raise PermissionError("shopify hmac mismatch")
-
-    elif path.startswith("/webhooks/generic/"):
-        # Generic webhook: per-config; the handler itself validates.
-        # Middleware can't know the algorithm without loading the row.
-        return
-
-    elif path.startswith("/webhooks/crm/"):
-        sig_header = request.headers.get("X-Signature") or request.headers.get("X-Webhook-Signature", "")
-        if not verify_hmac_sha256_hex(secret, body, sig_header):
-            raise PermissionError("crm hmac mismatch")
-
-    # Unknown webhook path — let it through; route will 404 if invalid.
-
-
-async def _verify_twilio_request(request: Request, settings: Settings) -> None:
-    """Verify an inbound Twilio webhook via the X-Twilio-Signature header.
-
-    Twilio signs the exact public URL it POSTed to plus the form params,
-    HMAC-SHA1 keyed by the account auth token. The URL is rebuilt from the
-    configured base_url so a proxy rewriting scheme or host can't break
-    verification — base_url must match the webhook URL set in the Twilio
-    console.
-    """
-    auth_token = settings.twilio_auth_token
-    if not auth_token:
-        if settings.is_production:
-            raise PermissionError("twilio auth token not configured")
-        logger.warning(
-            "skipping twilio signature check — no auth token (dev only)",
+        logger.error(
+            "SHOPIFY_WEBHOOK_SECRET not configured — rejecting webhook",
             extra={"path": request.url.path},
         )
-        return
+        raise HTTPException(status_code=500, detail="webhook signing secret not configured")
 
-    signature = request.headers.get("X-Twilio-Signature", "")
-    url = f"{settings.base_url.rstrip('/')}{request.url.path}"
-    form = await request.form()
-    params = {k: str(v) for k, v in form.items()}
-    if not verify_twilio_signature(auth_token, url, params, signature):
-        raise PermissionError("twilio signature mismatch")
+    signature = request.headers.get(SHOPIFY_HMAC_HEADER, "")
+    if not signature:
+        logger.warning(
+            "shopify webhook rejected: missing %s header",
+            SHOPIFY_HMAC_HEADER,
+            extra={"path": request.url.path},
+        )
+        raise HTTPException(status_code=401, detail="missing signature")
+
+    if not verify_hmac_sha256_base64(secret, body, signature):
+        logger.warning(
+            "shopify webhook rejected: hmac mismatch",
+            extra={"path": request.url.path},
+        )
+        raise HTTPException(status_code=401, detail="invalid signature")
+
+    return body
 
 
 async def _read_and_cache_body(request: Request) -> bytes:
@@ -183,52 +151,3 @@ async def _read_and_cache_body(request: Request) -> bytes:
     if not hasattr(request.state, "_cached_body"):
         request.state._cached_body = await request.body()
     return request.state._cached_body  # type: ignore[no-any-return]
-
-
-def _infer_integration(path: str) -> str:
-    if path.startswith("/webhooks/shopify/"):
-        return "shopify"
-    if path.startswith("/webhooks/twilio/"):
-        return "twilio"
-    if path.startswith("/webhooks/crm/"):
-        return "crm"
-    if path.startswith("/webhooks/generic/"):
-        return "generic"
-    return ""
-
-
-async def _load_signing_secret(client_id: UUID, integration: str) -> str | None:
-    """Look up the per-client signing secret for this integration.
-
-    Uses the Supabase REST API with the service role key (RLS-bypassing
-    admin lookup) to avoid setting tenant context before signature
-    verification — chicken-and-egg.
-    """
-    settings = get_settings()
-    if not settings.supabase_url or not settings.supabase_service_key:
-        return None
-
-    url = f"{settings.supabase_url}/rest/v1/client_configs"
-    headers = {
-        "apikey": settings.supabase_service_key,
-        "Authorization": f"Bearer {settings.supabase_service_key}",
-        "Accept": "application/json",
-    }
-    params = {
-        "client_id": f"eq.{client_id}",
-        "select": "webhook_signing_secrets",
-        "limit": "1",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(url, headers=headers, params=params)
-            resp.raise_for_status()
-            rows = resp.json()
-    except (httpx.HTTPError, ValueError) as e:
-        logger.exception("failed to load signing secret", exc_info=e)
-        return None
-
-    if not rows:
-        return None
-    secrets = rows[0].get("webhook_signing_secrets") or {}
-    return secrets.get(integration)

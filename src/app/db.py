@@ -1,13 +1,12 @@
-"""asyncpg connection pool with per-request tenant context.
+"""asyncpg connection pool.
 
-The pool itself uses a single Postgres role (the Supabase service role).
-Tenant isolation is enforced by Row Level Security policies that read
-`app.current_client_id` — a Postgres session variable we set at the
-start of every connection acquisition based on the request's
-ContextVar.
+Single-tenant: one deployment, one database, one Postgres role. There is
+no Row Level Security and no per-request tenant context — every row in
+this database belongs to the one client this service is deployed for.
 
-For background jobs and admin code, use `set_tenant_context()` to
-explicitly scope a block of work to one tenant.
+`get_connection()` hands out a pooled connection wrapped in a transaction
+so each acquire/release cycle returns the connection to the pool in a
+clean state.
 """
 
 from __future__ import annotations
@@ -16,8 +15,6 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from contextvars import ContextVar
-from uuid import UUID
 
 import asyncpg
 
@@ -26,11 +23,6 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 _pool: asyncpg.Pool | None = None
-_current_tenant: ContextVar[UUID | None] = ContextVar("_current_tenant", default=None)
-# Set per-request by require_admin_user when a demo-role token is presented (and
-# DEMO_MODE is on). While true, get_service_connection() yields an in-memory
-# FakeConn instead of a real pool connection — the demo never touches the DB.
-_demo: ContextVar[bool] = ContextVar("_demo", default=False)
 
 
 async def _register_codecs(conn: asyncpg.Connection) -> None:
@@ -75,101 +67,17 @@ async def close_pool() -> None:
         logger.info("Database pool closed")
 
 
-def set_current_tenant(client_id: UUID | None) -> None:
-    """Set the current request's tenant context (used by middleware)."""
-    _current_tenant.set(client_id)
-
-
-def get_current_tenant() -> UUID | None:
-    return _current_tenant.get()
-
-
-def set_demo(flag: bool) -> None:
-    """Mark (or clear) the current request as a demo-role request."""
-    _demo.set(flag)
-
-
-def get_demo() -> bool:
-    return _demo.get()
-
-
 @asynccontextmanager
 async def get_connection() -> AsyncIterator[asyncpg.Connection]:
-    """Acquire a connection scoped to the current tenant context.
+    """Acquire a pooled connection inside a transaction.
 
-    Wraps the connection use in a transaction so the role switch +
-    tenant variable are bounded to this request and revert cleanly on
-    exit (preventing cross-request leakage when pool connections are
-    reused).
-
-    Why the `SET ROLE authenticated`: Supabase's `postgres` role has
-    `bypassrls=true` (see `pg_roles`), which means even `FORCE ROW
-    LEVEL SECURITY` on a table does nothing for queries this connection
-    runs. `authenticated` does NOT have `bypassrls`, so switching into
-    it makes RLS policies actually filter. `authenticated` is granted
-    full DML on every tenant-scoped table by Supabase's default GRANTs.
-
-    Why `SET LOCAL` semantics: both the role switch and the tenant
-    setting are transaction-scoped. When the caller's `async with` block
-    exits, the transaction ends and both revert. Pool connection returns
-    to its baseline (`postgres` role, no tenant setting) — no state can
-    leak into the next request that acquires this same connection.
+    The transaction commits when the caller's `async with` block exits
+    cleanly and rolls back on exception, so partial writes never leak
+    into the pool's next user.
     """
     if _pool is None:
         raise RuntimeError("DB pool not initialized — call init_pool() first")
 
-    async with _pool.acquire() as conn:
-        async with conn.transaction():
-            # Inside a transaction, SET ROLE behaves as SET LOCAL ROLE
-            # (reverts on commit/rollback). Same for set_config(..., true).
-            await conn.execute("SET ROLE authenticated")
-            client_id = _current_tenant.get()
-            if client_id is not None:
-                await conn.execute(
-                    "SELECT set_config('app.current_client_id', $1, true)",
-                    str(client_id),
-                )
-            yield conn
-
-
-@asynccontextmanager
-async def set_tenant_context(client_id: UUID) -> AsyncIterator[asyncpg.Connection]:
-    """Explicitly scope a block of code to one tenant.
-
-    Used by background jobs, admin operations, and tests that need to
-    iterate over tenants without going through the request middleware.
-    """
-    token = _current_tenant.set(client_id)
-    try:
-        async with get_connection() as conn:
-            yield conn
-    finally:
-        _current_tenant.reset(token)
-
-
-@asynccontextmanager
-async def get_service_connection() -> AsyncIterator[asyncpg.Connection]:
-    """Acquire a service-role connection that BYPASSES RLS.
-
-    For admin operations that cross tenants or need to read/write
-    audit_log (which has no tenant policy by design). Stays on the
-    default `postgres` role — we do not `SET ROLE authenticated`. Use
-    sparingly: bypassing RLS is the most dangerous tool we have.
-
-    Demo-role requests never reach the database: when the `_demo` ContextVar
-    is set (by require_admin_user, gated on DEMO_MODE), this yields an
-    in-memory FakeConn over canned fixtures instead. Checked once at entry so
-    a mid-block reset can't swap connection types underneath a caller.
-    """
-    if _demo.get():
-        from app.demo import fake_service_connection  # local import avoids cycle
-
-        async with fake_service_connection() as conn:
-            yield conn
-        return
-
-    if _pool is None:
-        raise RuntimeError("DB pool not initialized — call init_pool() first")
     async with _pool.acquire() as conn:
         async with conn.transaction():
             yield conn

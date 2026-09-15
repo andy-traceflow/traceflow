@@ -1,129 +1,254 @@
-# TraceFlow
+# SIA Kit
 
-> AI Lead Recovery and Operations Automation for surface, countertop, flooring, and pool resurfacing contractors.
+The delivery template behind a fixed-price integration service: **one Shopify
+event → one destination system, deployed, monitored, with a runbook.** Each
+client engagement is a fork of this repository, configured by environment
+variables and one `mapping.yaml`, deployed to its own Render service with its
+own Postgres. One deployment serves exactly one client.
 
-**Status:** Pre-launch (Phase 0)
-**Domain:** [traceflow.app](https://traceflow.app)
-**Founder:** Andy
+Destinations today: **Notion, Monday.com, HubSpot, Slack, Google Sheets.**
+
+```
+Shopify
+  └─> POST /webhooks/shopify/{topic}
+        ├─ HMAC verify (fail closed, always)
+        ├─ persist raw event → events table (status='received')
+        └─ return 200 in <5s
+              │
+              └─> worker (python -m app.worker) picks up 'received' events
+                    ├─ transform via mapping.yaml
+                    ├─ push to destination adapter
+                    ├─ success → status='delivered'
+                    └─ failure → retry 1m · 5m · 15m · 1h · 6h
+                                 └─ exhausted / permanent → status='dead' → Slack alert
+```
+
+Three principles, in priority order:
+
+1. **Durable first, process second.** The webhook handler only verifies,
+   writes one row, and returns 200. Everything else happens in a separate
+   worker reading from the `events` table, so a restart loses nothing.
+2. **Config in env vars and one mapping file.** No database-backed settings.
+   A `.env` plus `mapping.yaml` fully describe a deployment.
+3. **Fail closed, always.** No dev-mode bypasses. Missing secret, missing DB,
+   malformed mapping, missing destination credentials → the process refuses
+   to start.
 
 ---
 
-## What this repo is
+## Fork and deploy in 30 minutes
 
-The TraceFlow platform: a multi-tenant FastAPI application that recovers missed-call leads, qualifies them via AI-driven SMS conversations, and routes them into client CRMs. Each client is a tenant in shared infrastructure, configured rather than custom-built.
+### 0. You need
 
-This repo also contains the living strategic documentation, operating playbooks, and Claude Code skills that power the business.
+- Python 3.11+
+- A Postgres database (a free Supabase project is fine)
+- A Render account
+- The destination's credentials (see `.env.example` for exactly where each one comes from)
+- Admin access to the client's Shopify store
 
-## Repo structure
-
-```
-traceflow/
-├── CLAUDE.md                # Master context for Claude Code
-├── README.md                # This file
-├── pyproject.toml           # Python project + deps
-├── render.yaml              # Render service config (web + adapter-health + daily-digest crons)
-├── Dockerfile               # python:3.12-slim + uvicorn
-├── docker-compose.yml       # Local dev
-├── .env.example             # Platform-level secrets template
-├── .github/
-│   └── workflows/
-│       └── ci.yml           # pgvector Postgres + migrations + ruff + pytest
-├── .claude/
-│   └── skills/              # Repeatable Claude Code skills (multi-tenant-arch, adapter-pattern, etc.)
-├── docs/
-│   ├── PRD.md               # Product requirements (single source of truth)
-│   ├── architecture.md      # Target architecture deep-dive
-│   ├── workflow-schema.md   # YAML lifecycle schemas
-│   ├── CHANGELOG.md         # Decision log
-│   ├── decisions/           # Architecture Decision Records
-│   └── playbooks/           # Discovery, outreach, onboarding playbooks
-├── migrations/              # Numbered SQL — applied in order by scripts/apply_migrations.py
-│   ├── 001_create_clients_and_configs.sql
-│   ├── 002_create_client_field_mappings.sql   # Layer 2
-│   ├── 003_create_client_webhook_configs.sql  # Layer 3
-│   ├── 004_create_leads_messages_events.sql   # canonical schema
-│   ├── 005_create_kb_tables.sql               # SIA Module C, pgvector
-│   ├── 006_create_audit_log.sql               # trigger-based audit
-│   ├── 007_create_sync_log.sql
-│   ├── 008_create_user_permissions.sql
-│   ├── 009_create_calculator_tables.sql       # SIA Module B
-│   ├── 010_force_rls_on_tenant_tables.sql     # defense in depth: RLS applies to owners too
-│   └── 011_null_safe_tenant_policies.sql      # NULLIF guards against '' → uuid cast errors
-├── src/
-│   └── app/
-│       ├── main.py          # FastAPI app, lifespan, router mounts
-│       ├── config.py        # pydantic-settings
-│       ├── db.py            # asyncpg pool + SET ROLE authenticated + JSON/JSONB codec
-│       ├── middleware/      # tenant_resolver, auth (JWKS), signature_verify
-│       ├── webhooks/        # shopify, twilio (stub), crm (stub), generic (Layer 3) ✅
-│       ├── adapters/        # base Protocol, monday, ghl (stub), registry
-│       ├── models/          # Client, ClientConfig, Lead, Message, Event, KBEntry
-│       ├── services/        # dedupe, notifications, webhook_signature, field_mappings,
-│       │                    # permissions, audit, calculator
-│       ├── routers/         # kb, kb_export, calculator
-│       └── jobs/            # adapter_health (hourly), daily_digest (nightly recovery digest)
-├── tests/                   # 124 tests — pure unit + live-DB integration
-│   ├── conftest.py          # mirrors TRACEFLOW_TEST_DB_URL → SUPABASE_DB_URL for app boot
-│   ├── test_tenant_isolation.py   # Non-negotiable RLS suite (31 tests)
-│   ├── test_tenant_resolver.py    # Path regex extraction (28 tests)
-│   ├── test_generic_webhook.py    # Layer 3 integration via TestClient (16 tests)
-│   ├── test_dedupe.py
-│   ├── test_webhook_signature.py
-│   ├── adapters/test_monday_adapter.py
-│   ├── services/test_calculator.py
-│   ├── services/test_field_mappings.py
-│   └── sql/
-│       └── bootstrap_supabase_stubs.sql       # CI: creates auth.users + anon/authenticated/service_role roles
-└── scripts/
-    ├── apply_migrations.py         # Idempotent migration runner (tracking via schema_migrations)
-    ├── inspect_monday_board.py     # Onboarding helper: list a board's column IDs
-    └── onboard_client.py           # Phase 1 tenant provisioner (YAML in, DB rows out)
-```
-
-## Getting started (for Claude Code sessions)
-
-1. **Read `CLAUDE.md`** — the master context file
-2. **Skim `docs/PRD.md`** — strategy and product spec (sections 7 + 8 most relevant for code work)
-3. **Load relevant `.claude/skills/<skill>/SKILL.md`** files based on the task
-4. **Check `docs/CHANGELOG.md`** for recent decisions and changes
-
-## Running locally
+### 1. Clone and sanity-check
 
 ```bash
-# Install (project + dev tools — pytest, ruff, mypy)
+git clone <your-fork> sia-kit-<client>
+cd sia-kit-<client>
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
-
-# Apply migrations against your Supabase project (or any Postgres with pgvector).
-# Idempotent: skips already-applied migrations via a `schema_migrations` table.
-SUPABASE_DB_URL=postgresql://postgres:PWD@db.<ref>.supabase.co:5432/postgres \
-    python scripts/apply_migrations.py
-
-# Start the API locally
-uvicorn app.main:app --reload --port 8000
-
-# Run the pure unit tests (no DB needed — TRACEFLOW_TEST_DB_URL unset → skip cleanly)
-pytest tests/test_dedupe.py tests/test_webhook_signature.py tests/test_tenant_resolver.py \
-       tests/services tests/adapters
-
-# Run the full suite incl. tenant isolation + generic webhook integration
-# (needs a Postgres with migrations applied and the Supabase-standard roles —
-#  see tests/sql/bootstrap_supabase_stubs.sql for what CI does to a vanilla DB)
-TRACEFLOW_TEST_DB_URL=postgresql://... pytest -v
+pytest -q                                            # ~180 tests, no network, <5s
 ```
 
-**Two env vars, one purpose:** `SUPABASE_DB_URL` is read by the production app and the migration runner. `TRACEFLOW_TEST_DB_URL` is read by the test suite. `tests/conftest.py` mirrors `TRACEFLOW_TEST_DB_URL` into `SUPABASE_DB_URL` at test collection time so the FastAPI app's lifespan can boot against the test DB — you only need to set the one for testing.
+### 2. Create the database
 
-**Connection string format on Supabase:** integration tests run fine against the **direct** connection (`db.<ref>.supabase.co:5432`) if your local network has IPv6. The deployed FastAPI on Render uses the **session-mode pooler** (`aws-X-<region>.pooler.supabase.com:5432` with user `postgres.<ref>`) because Render's outbound network is IPv4-only and Supabase Free's direct port is IPv6-only.
+Create a Supabase project (or any Postgres). Copy the connection URI
+(Supabase: **Connect → Session pooler**, URI form, replace the password), then:
 
-## CI
+```bash
+SUPABASE_DB_URL='postgresql://...' python scripts/apply_migrations.py
+```
 
-`.github/workflows/ci.yml` runs on every push and PR:
+That creates the `events` table. Re-running is safe.
 
-1. Spins up a `pgvector/pgvector:pg16` Postgres
-2. Applies `tests/sql/bootstrap_supabase_stubs.sql` + all migrations in order
-3. Runs `ruff check`
-4. Runs `pytest` with `TRACEFLOW_TEST_DB_URL` set — the tenant isolation suite is strict here and any cross-tenant leak blocks the build
+### 3. Set the environment
 
-## License
+```bash
+cp .env.example .env
+```
 
-Proprietary. All rights reserved.
+Fill in the **required four** plus **one destination block**:
+
+| Variable | Where it comes from |
+|---|---|
+| `SUPABASE_DB_URL` | Step 2 |
+| `SHOPIFY_WEBHOOK_SECRET` | Shopify admin → Settings → Notifications → Webhooks → bottom of page ("signed with") |
+| `DESTINATION` | `notion` \| `monday` \| `hubspot` \| `slack` \| `sheets` |
+| `ADMIN_TOKEN` | `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
+| `NOTION_API_KEY` + `NOTION_DATABASE_ID` (or the equivalent pair for your destination) | `.env.example` has per-destination instructions |
+| `ALERT_WEBHOOK_URL` | Slack → Incoming Webhooks. Not required, but you want it. |
+| `BASE_URL` | The Render URL once you have it; used in alert links |
+
+Every required variable is checked at startup; a missing one names itself in
+the boot error.
+
+### 4. Edit `mapping.yaml`
+
+This is the one file that changes per engagement. Set `destination:` to match
+`DESTINATION`, then describe each field:
+
+```yaml
+fields:
+  - from: "$.total_price"        # JSONPath into the Shopify payload
+    to: "Total"                  # the destination's field name, exactly as shown there
+    type: number
+```
+
+`to:` must match the destination **by display name** — a Notion property, a
+Monday column title, a Sheets header cell, a HubSpot property internal name.
+Adapters resolve names by introspecting the destination, so create the
+columns first. The file is fully commented; the schema reference is the
+docstring of `src/app/mapping.py`.
+
+Validate without deploying:
+
+```bash
+python -c "from app.mapping import load_mapping; print(load_mapping())"
+```
+
+A malformed mapping fails the deploy, not the first order.
+
+### 5. Smoke it locally
+
+Terminal 1 — the API:
+
+```bash
+uvicorn app.main:app --port 8000
+```
+
+Terminal 2 — send a signed test order, then drain the queue once:
+
+```bash
+python scripts/send_test_webhook.py http://localhost:8000
+python -m app.worker --once
+```
+
+The record should now exist in the destination. If not, the worker log
+line says why, and `curl -H "Authorization: Bearer $ADMIN_TOKEN"
+localhost:8000/events?status=dead` shows the stored error.
+
+### 6. Deploy to Render
+
+`render.yaml` is a Blueprint: **Render → New → Blueprint → your fork**. It
+creates the web service, the worker, and an env group named
+`sia-kit-secrets`. Fill the group with the same values as your `.env`
+(`ENVIRONMENT=production` is set by the Blueprint). Deploy.
+
+```bash
+curl https://<service>.onrender.com/health
+```
+
+You want `"status": "ok"` with `"checks": {"database": true, "destination": true}`.
+
+**Cheaper shape:** delete the `worker` block in `render.yaml` and uncomment
+the `cron` block — it runs `python -m app.worker --once` every 5 minutes for
+pennies, at the cost of up to 5 minutes of delivery latency.
+
+### 7. Register the Shopify webhook
+
+Shopify admin → **Settings → Notifications → Webhooks → Create webhook**:
+
+- Event: **Order creation** (or whichever topic `mapping.yaml` names)
+- Format: **JSON**
+- URL: `https://<service>.onrender.com/webhooks/shopify/orders/create`
+- API version: latest stable
+
+Confirm `SHOPIFY_WEBHOOK_SECRET` on Render matches the "signed with" value on
+that page — it is per store, not per webhook. Click **Send test
+notification** on the new webhook; the response must be 200.
+
+### 8. Verify with a test order
+
+In the store, place a test order (Shopify's Bogus Gateway or a 100% discount
+code), then:
+
+```bash
+curl -H "Authorization: Bearer $ADMIN_TOKEN" https://<service>.onrender.com/events?limit=3
+```
+
+The newest event should be `delivered` within seconds (always-on worker) or
+one cron interval, with `external_id` set to the destination's record id —
+and the record visible in the destination. Done. Hand the client
+`RUNBOOK.md`.
+
+---
+
+## Operating a deployment
+
+| Surface | What it is for |
+|---|---|
+| `GET /health` | Public. DB check, destination check (cached 60s), event counts, `dead_events`, `last_delivered_at`. 503 only when the database is unreachable. Point the retainer's uptime monitor here. |
+| `GET /events?status=dead&limit=50` | Bearer `ADMIN_TOKEN`. Newest first, full payload and `last_error`. |
+| `GET /events/{id}` | Same auth. One event. |
+| `POST /events/{id}/replay` | Same auth. Resets a `dead` event to `received` with a fresh retry budget. Fix the cause first. |
+| Slack alert | One message per dead-lettered event with the error and the replay command. |
+| Logs | One JSON line per event transition: `event_id`, `webhook_id`, `status`, `attempts`, `duration_ms`. `LOG_FORMAT=text` for local reading. |
+
+**Retry policy.** Transient failures (destination 5xx, 408/429, timeouts,
+connection errors) retry at 1m, 5m, 15m, 1h, 6h (±20% jitter), then `dead`.
+Permanent failures (other 4xx, a value that cannot be coerced, a field the
+mapping requires but the payload lacks) go to `dead` immediately — retrying
+would not help, and you get the alert right away.
+
+**Dedupe.** Shopify redelivers on any non-200. `(source, webhook_id)` is
+unique in the table, so a redelivery is absorbed while the original row keeps
+its own retry state. Nothing is double-delivered.
+
+**Rotating a credential.** Update the Render env var → redeploy → replay any
+dead events from the outage. Renaming a column in the destination without
+updating `mapping.yaml` dead-letters every event with a clear "no property
+named X" error until you fix one or the other.
+
+---
+
+## Repository map
+
+```
+mapping.yaml                 the per-engagement transform (the file you edit)
+migrations/001_create_events.sql
+src/app/
+  main.py                    FastAPI app: 3 routers + startup checks
+  worker.py                  claim → transform → deliver → retry/dead
+  pipeline.py                Pipeline(transform, deliver) + failure types
+  mapping.py                 mapping.yaml schema, path resolution, transforms
+  config.py                  Settings + REQUIRED_AT_STARTUP
+  db.py                      asyncpg pool
+  log.py                     JSON logging
+  models/event.py            the one persisted shape
+  webhooks/shopify.py        verify → insert → 200
+  services/webhook_signature.py   HMAC verifiers + the route dependency
+  services/events.py         EventStore (all SQL) — Postgres impl
+  services/notifications.py  dead-letter alert → Slack webhook
+  routers/health.py, events.py
+  adapters/                  base.py (Destination Protocol + record contract), registry.py,
+                             monday.py, hubspot.py, notion.py, slack.py, sheets.py
+scripts/apply_migrations.py, send_test_webhook.py
+tests/                       ~190 tests; adapters via httpx.MockTransport; DB tests run in CI
+```
+
+## Adding a destination
+
+Implement the two-method `Destination` Protocol in `src/app/adapters/base.py`
+(read the record contract there — display-name keys, `_name`/`_key`/
+`_line_items`), read credentials in `__init__` with `require_env`, raise
+`PermanentDeliveryError`/`TransientDeliveryError` for in-body errors and let
+`httpx.HTTPStatusError` propagate for HTTP ones, register the class in
+`adapters/registry.py`, and test it with `httpx.MockTransport` like the
+others. `tests/adapters/test_registry.py` will check Protocol conformance.
+
+## Tests and CI
+
+```bash
+ruff check .
+pytest -q                     # unit suite, no network
+TEST_DB_URL=postgresql://... pytest -q   # also runs the Postgres-backed store tests
+```
+
+CI (`.github/workflows/ci.yml`) applies the migrations to a fresh Postgres,
+validates `mapping.yaml`, lints, and runs everything.

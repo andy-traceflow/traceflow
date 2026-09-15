@@ -1,24 +1,39 @@
-"""Low-level event stream for debugging and analytics.
+"""The one persisted shape: a row in the `events` table.
 
-Anything noteworthy — webhook received, SMS sent, CRM pushed, qualifier
-ran — drops an Event with its full payload.
+See migrations/001_create_events.sql for the lifecycle and the dual
+meaning of `next_retry_at`.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict
+
+
+class EventStatus(StrEnum):
+    RECEIVED = "received"
+    PROCESSING = "processing"
+    DELIVERED = "delivered"
+    DEAD = "dead"
 
 
 class Event(BaseModel):
-    id: UUID
-    client_id: UUID
-    lead_id: UUID | None = None
-    event_type: str
-    payload: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
 
-    model_config = {"from_attributes": True}
+    id: UUID
+    source: str
+    topic: str
+    webhook_id: str
+    shop_domain: str | None = None
+    payload: Any
+    status: EventStatus = EventStatus.RECEIVED
+    attempts: int = 0
+    last_error: str | None = None
+    next_retry_at: datetime | None = None
+    external_id: str | None = None
+    received_at: datetime
+    delivered_at: datetime | None = None
