@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -39,6 +40,7 @@ async def shopify_webhook(
     body: bytes = Depends(verify_shopify_signature),
     store: EventStore = Depends(get_event_store),
 ) -> Response:
+    started = time.perf_counter()
     # `body` is the exact bytes the dependency verified. Never re-read the stream.
     try:
         payload = json.loads(body)
@@ -93,6 +95,8 @@ async def shopify_webhook(
             "topic": event_topic,
             "shop_domain": shop_domain,
             "status": "received",
+            "attempts": 0,
+            "duration_ms": round((time.perf_counter() - started) * 1000),
         },
     )
     return Response(status_code=200, content="ok")

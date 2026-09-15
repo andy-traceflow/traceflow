@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 
@@ -116,3 +117,35 @@ async def test_terminal_states_are_never_claimed(store):
     assert by_id[dead_id]["status"] == "dead"
     assert by_id[ok_id]["status"] == "delivered"
     assert by_id[ok_id]["delivered_at"] is not None
+
+
+async def test_operational_reads_and_replay(store):
+    dead_id = await _insert(store, "wh-dead")
+    ok_id = await _insert(store, "wh-ok")
+    pending_id = await _insert(store, "wh-pending")
+    for e in await store.claim(limit=2, lease_seconds=60):
+        if e.id == dead_id:
+            await store.mark_dead(e.id, attempts=5, error="gave up")
+        else:
+            await store.mark_delivered(e.id, attempts=1, external_id="ext-1")
+
+    assert await store.count_by_status() == {"received": 1, "processing": 0, "delivered": 1, "dead": 1}
+    assert await store.last_delivered_at() is not None
+
+    dead_list = await store.list_events(status=EventStatus.DEAD, limit=10)
+    assert [e.id for e in dead_list] == [dead_id]
+    everything = await store.list_events(status=None, limit=10)
+    assert {e.id for e in everything} == {dead_id, ok_id, pending_id}
+    assert everything[0].received_at >= everything[-1].received_at  # newest first
+
+    assert (await store.get(dead_id)).last_error == "gave up"
+    assert await store.get(uuid4()) is None
+
+    assert await store.replay(ok_id) is None  # only dead events replay
+    replayed = await store.replay(dead_id)
+    assert replayed is not None
+    assert replayed.status == EventStatus.RECEIVED
+    assert replayed.attempts == 0
+    assert replayed.next_retry_at is None
+    claimed_ids = {e.id for e in await store.claim(limit=10, lease_seconds=60)}
+    assert dead_id in claimed_ids

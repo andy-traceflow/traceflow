@@ -175,7 +175,7 @@ async def test_successful_delivery_marks_delivered(store, clock, alerts):
     )
 
     assert status == EventStatus.DELIVERED
-    row = store.get(event_id)
+    row = store.row(event_id)
     assert row.status == EventStatus.DELIVERED
     assert row.attempts == 1
     assert row.external_id == "ext-1"
@@ -197,7 +197,7 @@ async def test_transient_failure_schedules_retry_and_is_not_delivered(store, clo
     )
 
     assert status == EventStatus.RECEIVED
-    row = store.get(event_id)
+    row = store.row(event_id)
     assert row.status == EventStatus.RECEIVED
     assert row.delivered_at is None
     assert row.external_id is None
@@ -257,7 +257,7 @@ async def test_permanent_4xx_goes_straight_to_dead_with_one_alert(store, clock, 
     )
 
     assert status == EventStatus.DEAD
-    row = store.get(event_id)
+    row = store.row(event_id)
     assert row.status == EventStatus.DEAD
     assert row.attempts == 1  # no retries burned
     assert "HTTP 422" in (row.last_error or "")
@@ -277,7 +277,7 @@ async def test_transform_error_is_permanent(store, clock, alerts):
         store, event, Pipeline(bad_transform, Destination()), alert=alerts, now=clock.now
     )
     assert status == EventStatus.DEAD
-    assert "KeyError" in (store.get(event_id).last_error or "")
+    assert "KeyError" in (store.row(event_id).last_error or "")
     assert len(alerts.fired) == 1
 
 
@@ -297,7 +297,7 @@ async def test_five_transient_failures_produce_exactly_one_dead_row_and_one_aler
         clock.tick(8 * 3600)  # beyond the largest backoff
 
     assert outcomes == [EventStatus.RECEIVED] * (MAX_ATTEMPTS - 1) + [EventStatus.DEAD]
-    row = store.get(event_id)
+    row = store.row(event_id)
     assert row.status == EventStatus.DEAD
     assert row.attempts == MAX_ATTEMPTS
     assert len(store.by_status(EventStatus.DEAD)) == 1
@@ -317,7 +317,7 @@ async def test_alert_failure_does_not_break_the_worker(store, clock):
         alert=exploding_alert, now=clock.now,
     )
     assert status == EventStatus.DEAD
-    assert store.get(event_id).status == EventStatus.DEAD
+    assert store.row(event_id).status == EventStatus.DEAD
 
 
 async def test_expired_processing_lease_is_reclaimed(store, clock):

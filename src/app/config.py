@@ -45,8 +45,18 @@ class Settings(BaseSettings):
     # When set, localhost + testserver are always appended for dev/tests.
     allowed_hosts: str = ""
 
+    # Bearer token for GET /events and POST /events/{id}/replay. REQUIRED.
+    # Generate one: python -c "import secrets; print(secrets.token_urlsafe(32))"
+    admin_token: str = ""
+
+    # Slack incoming-webhook URL that receives one message per dead-lettered
+    # event. Optional but strongly recommended — without it, dead letters
+    # are only visible in the logs and on /health.
+    alert_webhook_url: str = ""
+
     # Observability
     sentry_dsn: str = ""
+    log_format: str = "json"  # json | text
 
     @property
     def allowed_hosts_list(self) -> list[str]:
@@ -73,7 +83,12 @@ def get_settings() -> Settings:
 # Settings whose absence must stop the process, not degrade it. Checked once
 # in the lifespan handler so a misconfigured deploy fails at boot — never on
 # the first webhook, and never by silently skipping a check.
-REQUIRED_AT_STARTUP: tuple[str, ...] = ("shopify_webhook_secret", "supabase_db_url", "destination")
+REQUIRED_AT_STARTUP: tuple[str, ...] = (
+    "shopify_webhook_secret",
+    "supabase_db_url",
+    "destination",
+    "admin_token",
+)
 
 
 def require_startup_settings(settings: Settings | None = None) -> None:

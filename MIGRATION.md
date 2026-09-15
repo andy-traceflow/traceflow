@@ -223,3 +223,38 @@ construction and fail closed; the record is a plain dict of destination display 
 - `pytest tests/ -q` → **179 passed, 6 skipped, 2.98s** (6 = CI-only Postgres tests). No network.
 - Configuration is now fully env vars + `mapping.yaml`. No `client_configs`, no `field_mappings`,
   no `client_webhook_configs` — and no code path reads configuration from the database.
+
+---
+
+## Phase 6 — Operational surface
+
+| Op | Path | Reason |
+|---|---|---|
+| E | `src/app/services/events.py`, `tests/fakes.py` | `EventStore` gains `count_by_status`, `last_delivered_at`, `list_events(status, limit)` (newest first), `get`, `replay` (`dead → received`, `attempts = 0`, only when dead; `RETURNING *` so a lost race returns None). Postgres + in-memory implementations |
+| R | `src/app/routers/health.py` | (1) DB connectivity, destination `health_check()`, counts by status incl. `dead_events`, `last_delivered_at`, git commit. **503 only when the DB is unreachable**; destination outage → 200 + `"degraded"` (restarting us would not fix Notion, and events are safe meanwhile). Destination check cached 60s and bounded by a 10s timeout — Render polls this path often enough to burn a rate limit otherwise |
+| + | `src/app/routers/events.py` | (2)(3) `GET /events?status=&limit=`, `GET /events/{id}`, `POST /events/{id}/replay` — all behind `require_admin_token` (`Authorization: Bearer ADMIN_TOKEN`, `hmac.compare_digest`, fail closed: no configured token → 401). Replay: 404 unknown, 409 not dead |
+| R | `src/app/services/notifications.py` | (4) Was Resend email with per-tenant recipient lists from `client_configs` — not a Slack poster, so rewritten minimally: `build_alert()` (Block Kit: event id, topic, webhook id, attempts, received, shop, fenced error, and the exact triage/replay commands) + `send_alert()` (always logs the ERROR line; POSTs to `ALERT_WEBHOOK_URL` when set; injectable client for tests). Now the worker's default alert sink |
+| E | `src/app/worker.py` | `log_alert` removed; `send_alert` is the default `alert=`. Uses `configure_logging` instead of `basicConfig`. Warns at boot when `ALERT_WEBHOOK_URL` is unset |
+| + | `src/app/log.py` | (5) `JsonFormatter` lifts `extra=` fields to top-level keys → one JSON line per transition with `event_id`, `webhook_id`, `status`, `attempts`, `duration_ms`. `configure_logging()` routes uvicorn's loggers through the same handler. `LOG_FORMAT=text` for local dev. Sentry init in the lifespan unchanged |
+| E | `src/app/webhooks/shopify.py` | The `event received` line now carries `attempts: 0` and `duration_ms` so every transition has the same fields |
+| E | `pyproject.toml` | `structlog` dropped — the stdlib formatter is 30 lines and needs no configuration; carrying an unused dependency is worse |
+| E | `src/app/config.py` | `admin_token` (added to `REQUIRED_AT_STARTUP`), `alert_webhook_url` (optional, warned), `log_format` |
+| R | `src/app/main.py` | Wires `events.router`; calls `configure_logging` at import; warns when no alert URL |
+| R | `.env.example` | (6) Rewritten: four required vars, one credential block per destination with where-each-value-comes-from, strongly-recommended, optional |
+| R | `README.md` | (7) Fork-and-deploy runbook: 8 numbered steps (clone/test → DB + migration → env → `mapping.yaml` → local smoke with the test-webhook script → Render Blueprint → Shopify webhook registration → test order), then operating reference, repo map, adding a destination, tests/CI |
+| + | `RUNBOOK.md` | (8) Client-facing: what it does, how to read `/health` in plain language, what the alert means, the three usual causes and who fixes them, what to do when one fires, what will break it, contact + response targets. Placeholders in `<angle brackets>` are filled per engagement |
+| R | `CLAUDE.md` | (9) Rewritten: what SIA Kit is, the three principles, fork-per-client and **no `client_id`**, repo map, conventions (error classification, record contract, dedupe, lease, no-network tests, logging), a `Never` list that inverts the old inviolable rule, commands |
+| D | `.claude/skills/adapter-pattern/`, `.claude/skills/fastapi-supabase/` | Kept in Phase 1 pending this rewrite; both describe TraceFlow's tenant model and `ClientConfig`-shaped adapters. Their surviving content is the "Adding a destination" section of `README.md` and the conventions in `CLAUDE.md` |
+| + | `scripts/send_test_webhook.py` | Signs the fixture order with `SHOPIFY_WEBHOOK_SECRET` and POSTs it with Shopify's headers — lets step 5/8 of the runbook verify HMAC + persistence before Shopify is involved. `--webhook-id` to demonstrate dedupe |
+| E | `render.yaml`, `.github/workflows/ci.yml`, `docker-compose.yml` | Env group gains `ADMIN_TOKEN`, `ALERT_WEBHOOK_URL`, `LOG_FORMAT`; CI validates `mapping.yaml` as its own step (a fork with a broken mapping fails in CI, not at deploy); compose gains the worker service |
+| + | `tests/test_health.py`, `tests/test_events_api.py`, `tests/test_notifications.py`, `tests/test_log.py` | Health 6 (ok with counts/last delivery, dead counted but still ok, destination down → degraded/200, DB down → 503, destination check cached, destination exception → false not 500); events API 11 (4 auth-rejection shapes, no-token-configured rejects, list filtered newest-first with payload/error, limit, 422s, get/404, replay resets budget, replayed event is claimable, replay refuses 3 non-dead statuses, 404); notifications 5 (Block Kit shape incl. replay command, truncation, POST via MockTransport, failure surfaces, no-URL logs with structured fields); log 4 (required fields at top level, non-JSON values stringified, exception included, uvicorn routed) |
+| E | `tests/test_events_store_db.py` | +1 Postgres-backed test covering counts, last delivery, list ordering/filter, get, replay-only-dead, replayed-is-claimable |
+| E | `tests/test_shopify_signature_dependency.py` | Fixture sets `ADMIN_TOKEN` (newly required) |
+| E | `tests/fakes.py` | Sync assertion helper renamed `get` → `row` (the Protocol's `get` is async and shadowed it) |
+
+### Phase 6 result
+- `ruff check .` → clean. Routes: `POST /webhooks/shopify/{topic:path}`, `GET /health`,
+  `GET /events`, `GET /events/{id}`, `POST /events/{id}/replay`.
+- `pytest tests/ -q` → **209 passed, 7 skipped, 3.09s** (7 = CI-only Postgres tests). No network.
+- The template is now usable for an engagement: every item on the Phase 6 list exists, and
+  `README.md` is the path from `git clone` to a delivered test order.

@@ -87,9 +87,18 @@ envVarGroups:
       # check; set to e.g. "*.onrender.com" so Render health checks keep working.
       - key: ALLOWED_HOSTS
         sync: false
+      # Required. Bearer token for GET /events and POST /events/{id}/replay.
+      - key: ADMIN_TOKEN
+        sync: false
+      # Slack incoming webhook for dead-letter alerts. Strongly recommended.
+      - key: ALERT_WEBHOOK_URL
+        sync: false
       - key: SENTRY_DSN
         sync: false
+      # Public URL of the web service; used in alert links.
       - key: BASE_URL
         sync: false
       - key: LOG_LEVEL
         value: INFO
+      - key: LOG_FORMAT
+        value: json

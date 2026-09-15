@@ -64,5 +64,9 @@ jobs:
       - name: Lint
         run: ruff check .
 
+      # A fork with a broken mapping.yaml must fail here, not at deploy.
+      - name: Validate mapping.yaml
+        run: python -c "from app.mapping import load_mapping; print(load_mapping())"
+
       - name: Run tests
         run: pytest -v

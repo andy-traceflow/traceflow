@@ -20,7 +20,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from app.db import get_connection
-from app.models.event import Event
+from app.models.event import Event, EventStatus
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,24 @@ class EventStore(Protocol):
     ) -> None: ...
 
     async def mark_dead(self, event_id: UUID, *, attempts: int, error: str) -> None: ...
+
+    # -- operational surface (health, triage, replay) ------------------
+
+    async def count_by_status(self) -> dict[str, int]:
+        """{'received': n, 'processing': n, 'delivered': n, 'dead': n} — every key present."""
+        ...
+
+    async def last_delivered_at(self) -> datetime | None: ...
+
+    async def list_events(self, *, status: EventStatus | None, limit: int) -> list[Event]:
+        """Newest first."""
+        ...
+
+    async def get(self, event_id: UUID) -> Event | None: ...
+
+    async def replay(self, event_id: UUID) -> Event | None:
+        """dead → received with a fresh attempt budget. None if not found or not dead."""
+        ...
 
 
 def _truncate(error: str) -> str:
@@ -167,6 +185,55 @@ class PostgresEventStore:
                 attempts,
                 _truncate(error),
             )
+
+    # -- operational surface --------------------------------------------
+
+    async def count_by_status(self) -> dict[str, int]:
+        async with get_connection() as conn:
+            rows = await conn.fetch("SELECT status, count(*) AS n FROM events GROUP BY status")
+        counts = {s.value: 0 for s in EventStatus}
+        for r in rows:
+            counts[r["status"]] = int(r["n"])
+        return counts
+
+    async def last_delivered_at(self) -> datetime | None:
+        async with get_connection() as conn:
+            value = await conn.fetchval("SELECT max(delivered_at) FROM events")
+        return value
+
+    async def list_events(self, *, status: EventStatus | None, limit: int) -> list[Event]:
+        async with get_connection() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM events
+                 WHERE ($1::text IS NULL OR status = $1)
+                 ORDER BY received_at DESC
+                 LIMIT $2
+                """,
+                status.value if status else None,
+                limit,
+            )
+        return [Event.model_validate(dict(r)) for r in rows]
+
+    async def get(self, event_id: UUID) -> Event | None:
+        async with get_connection() as conn:
+            row = await conn.fetchrow("SELECT * FROM events WHERE id = $1", event_id)
+        return Event.model_validate(dict(row)) if row else None
+
+    async def replay(self, event_id: UUID) -> Event | None:
+        async with get_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE events
+                   SET status = 'received',
+                       attempts = 0,
+                       next_retry_at = NULL
+                 WHERE id = $1 AND status = 'dead'
+                RETURNING *
+                """,
+                event_id,
+            )
+        return Event.model_validate(dict(row)) if row else None
 
 
 def get_event_store() -> EventStore:

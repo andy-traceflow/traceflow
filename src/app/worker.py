@@ -37,6 +37,7 @@ from pydantic import ValidationError
 
 from app.config import get_settings, require_startup_settings
 from app.db import close_pool, init_pool
+from app.log import configure_logging
 from app.models.event import Event, EventStatus
 from app.pipeline import (
     PermanentDeliveryError,
@@ -46,6 +47,7 @@ from app.pipeline import (
     build_pipeline,
 )
 from app.services.events import EventStore, get_event_store
+from app.services.notifications import send_alert
 
 logger = logging.getLogger(__name__)
 
@@ -113,21 +115,6 @@ def describe_failure(exc: BaseException) -> str:
     return text[:2000]
 
 
-async def log_alert(event: Event, error: str) -> None:
-    """Default alert sink: an ERROR log line. Phase 6 replaces this with the
-    Slack incoming-webhook poster (ALERT_WEBHOOK_URL)."""
-    logger.error(
-        "event dead-lettered",
-        extra={
-            "event_id": str(event.id),
-            "webhook_id": event.webhook_id,
-            "topic": event.topic,
-            "attempts": event.attempts,
-            "error": error,
-        },
-    )
-
-
 # ---------------------------------------------------------------------------
 # Per-event processing
 # ---------------------------------------------------------------------------
@@ -138,7 +125,7 @@ async def process_one(
     event: Event,
     pipeline: Pipeline,
     *,
-    alert: AlertFn = log_alert,
+    alert: AlertFn = send_alert,
     backoff: BackoffFn = backoff_seconds,
     now: datetime | None = None,
 ) -> EventStatus:
@@ -229,7 +216,7 @@ async def run_once(
     pipeline: Pipeline,
     *,
     batch_size: int = DEFAULT_BATCH_SIZE,
-    alert: AlertFn = log_alert,
+    alert: AlertFn = send_alert,
 ) -> int:
     """Drain everything that is due right now. Returns the number processed.
 
@@ -252,7 +239,7 @@ async def run_forever(
     *,
     batch_size: int = DEFAULT_BATCH_SIZE,
     poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
-    alert: AlertFn = log_alert,
+    alert: AlertFn = send_alert,
 ) -> None:
     """Poll until cancelled. Sleeps only when the queue is empty."""
     while True:
@@ -286,9 +273,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     settings = get_settings()
-    logging.basicConfig(level=settings.log_level)
+    configure_logging(settings.log_level, settings.log_format)
     require_startup_settings(settings)  # fail closed: no DB URL → no worker
     pipeline = build_pipeline()  # fail closed: bad DESTINATION / missing creds → no worker
+    if not settings.alert_webhook_url:
+        logger.warning("ALERT_WEBHOOK_URL not set — dead-lettered events will only appear in logs and /health")
 
     try:
         return asyncio.run(_main_async(args, pipeline))

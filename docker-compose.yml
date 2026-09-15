@@ -11,3 +11,15 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  worker:
+    build: .
+    command: python -m app.worker
+    env_file:
+      - .env
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

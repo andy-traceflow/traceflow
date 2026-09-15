@@ -19,7 +19,8 @@ class InMemoryEventStore:
 
     # -- helpers for assertions -------------------------------------------
 
-    def get(self, event_id: UUID) -> Event:
+    def row(self, event_id: UUID) -> Event:
+        """Sync accessor for assertions (the Protocol's `get` is async)."""
         return self.events[event_id]
 
     def by_status(self, status: EventStatus) -> list[Event]:
@@ -112,3 +113,40 @@ class InMemoryEventStore:
             last_error=error,
             next_retry_at=None,
         )
+
+    # -- operational surface --------------------------------------------
+
+    fail_reads_with: Exception | None = None
+
+    def _maybe_fail(self) -> None:
+        if self.fail_reads_with is not None:
+            raise self.fail_reads_with
+
+    async def count_by_status(self) -> dict[str, int]:
+        self._maybe_fail()
+        counts = {s.value: 0 for s in EventStatus}
+        for e in self.events.values():
+            counts[e.status.value] += 1
+        return counts
+
+    async def last_delivered_at(self) -> datetime | None:
+        self._maybe_fail()
+        stamps = [e.delivered_at for e in self.events.values() if e.delivered_at]
+        return max(stamps) if stamps else None
+
+    async def list_events(self, *, status: EventStatus | None, limit: int) -> list[Event]:
+        self._maybe_fail()
+        rows = [e for e in self.events.values() if status is None or e.status == status]
+        rows.sort(key=lambda e: e.received_at, reverse=True)
+        return rows[:limit]
+
+    async def get(self, event_id: UUID) -> Event | None:
+        self._maybe_fail()
+        return self.events.get(event_id)
+
+    async def replay(self, event_id: UUID) -> Event | None:
+        self._maybe_fail()
+        event = self.events.get(event_id)
+        if event is None or event.status != EventStatus.DEAD:
+            return None
+        return self._update(event_id, status=EventStatus.RECEIVED, attempts=0, next_retry_at=None)
