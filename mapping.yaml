@@ -21,7 +21,7 @@
 
 source: shopify
 topic: orders/create
-destination: notion
+destination: slack          # the template default is the cheapest smoke test; change per engagement
 
 # The field (by its `to` name) that identifies a record downstream. With
 # this set, a second event carrying the same value updates the existing

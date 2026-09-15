@@ -45,6 +45,14 @@ class Settings(BaseSettings):
     # When set, localhost + testserver are always appended for dev/tests.
     allowed_hosts: str = ""
 
+    # Where the delivery worker runs.
+    #   inprocess (default): a background task inside the web service. One
+    #     Render service, nothing lost on restart — the queue is the events
+    #     table, so the worker simply resumes when the process does.
+    #   separate: run `python -m app.worker` as its own Render worker or
+    #     cron; the web service only receives.
+    worker_mode: str = "inprocess"
+
     # Bearer token for GET /events and POST /events/{id}/replay. REQUIRED.
     # Generate one: python -c "import secrets; print(secrets.token_urlsafe(32))"
     admin_token: str = ""
@@ -91,11 +99,19 @@ REQUIRED_AT_STARTUP: tuple[str, ...] = (
 )
 
 
+WORKER_MODES: frozenset[str] = frozenset({"inprocess", "separate"})
+
+
 def require_startup_settings(settings: Settings | None = None) -> None:
-    """Raise RuntimeError naming every missing fail-closed setting."""
+    """Raise RuntimeError naming every missing or invalid fail-closed setting."""
     s = settings if settings is not None else get_settings()
     missing = [name.upper() for name in REQUIRED_AT_STARTUP if not getattr(s, name)]
     if missing:
         raise RuntimeError(
             "refusing to start: missing required environment variables: " + ", ".join(missing)
+        )
+    if s.worker_mode not in WORKER_MODES:
+        raise RuntimeError(
+            f"refusing to start: WORKER_MODE must be one of {sorted(WORKER_MODES)}, "
+            f"got {s.worker_mode!r}"
         )

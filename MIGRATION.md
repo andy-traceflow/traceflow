@@ -1,5 +1,10 @@
 # MIGRATION.md — TraceFlow → SIA Kit
 
+> **Naming note (2026-09-15, after Phase 7):** "SIA Kit" was the working name during this
+> migration. The product name reverted to **TraceFlow** once the merge landed; code, docs and
+> `render.yaml` were renamed in the follow-up commits on `main`. This log keeps the working
+> name so its commit references stay accurate.
+
 Running audit log of the conversion from the multi-tenant TraceFlow SaaS to the
 single-tenant SIA Kit integration template. One line per file deleted, moved, or
 rewritten, with the reason. Appended phase by phase; each phase ends in one commit.

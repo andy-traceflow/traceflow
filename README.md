@@ -1,10 +1,10 @@
-# SIA Kit
+# TraceFlow
 
-The delivery template behind a fixed-price integration service: **one Shopify
-event → one destination system, deployed, monitored, with a runbook.** Each
-client engagement is a fork of this repository, configured by environment
-variables and one `mapping.yaml`, deployed to its own Render service with its
-own Postgres. One deployment serves exactly one client.
+The delivery template behind TraceFlow's fixed-price integration service:
+**one Shopify event → one destination system, deployed, monitored, with a
+runbook.** Each client engagement is a copy of this repository, configured by
+environment variables and one `mapping.yaml`, deployed to its own Render
+service with its own Postgres. One deployment serves exactly one client.
 
 Destinations today: **Notion, Monday.com, HubSpot, Slack, Google Sheets.**
 
@@ -15,7 +15,7 @@ Shopify
         ├─ persist raw event → events table (status='received')
         └─ return 200 in <5s
               │
-              └─> worker (python -m app.worker) picks up 'received' events
+              └─> worker (in-process by default) picks up 'received' events
                     ├─ transform via mapping.yaml
                     ├─ push to destination adapter
                     ├─ success → status='delivered'
@@ -38,18 +38,18 @@ Three principles, in priority order:
 
 ## The deployment model — read this once
 
-**This repository is a template. Nothing deploys `main`.** Every client
-engagement is its own copy of the repo, its own Render services, its own
-Postgres, its own env vars. Never connect a Render service to this
-repository's `main` with auto-deploy on — a template commit is not a client
-release.
+**This repository is the template. `main` deploys to exactly one place: the
+demo service `traceflow-api` (Slack destination), which exists to prove the
+template continuously and to show prospects.** Every client engagement is its
+own copy of the repo, its own Render service, its own Postgres, its own env
+vars — never a second service pointed at this repository.
 
 Per engagement, what it costs to run (the maintenance retainer covers it):
 
 | Piece | Plan | ~Cost |
 |---|---|---|
 | Render web service | Starter | $7/mo — **not free**: the free tier spins down after 15 min idle and cold-starts in 30–60 s, longer than Shopify's 5 s webhook timeout. Shopify retries, so nothing is lost, but every quiet-period order lands a minute late. |
-| Render worker | cron `--once` every 5 min, or always-on Starter | $1/mo or $7/mo |
+| Delivery worker | **in-process** (default, `WORKER_MODE=inprocess`) — or `separate`: cron `--once` every 5 min / always-on Starter | $0 — or $1/mo / $7/mo |
 | Postgres | Supabase free, Neon free, or Render Postgres Basic | $0–6/mo. Supabase free **pauses projects after ~7 days without activity** and a paused DB means 503s until someone unpauses it; for a low-volume store prefer Neon (resumes on connect) or Render Postgres. |
 
 ## New engagement in 30 minutes
@@ -64,11 +64,11 @@ Per engagement, what it costs to run (the maintenance retainer covers it):
 ### 1. Copy the template and sanity-check
 
 Use GitHub's **Use this template → Create a new repository** on this repo
-(gives a clean history, no migration log), named `sia-kit-<client>`. Then:
+(gives a clean history, no migration log), named `traceflow-<client>`. Then:
 
 ```bash
-git clone <the-new-repo> sia-kit-<client>
-cd sia-kit-<client>
+git clone <the-new-repo> traceflow-<client>
+cd traceflow-<client>
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 pytest -q                                            # ~210 tests, no network, <5s
@@ -156,13 +156,14 @@ localhost:8000/events?status=dead` shows the stored error.
 ### 6. Deploy to Render
 
 First, in `render.yaml`, replace every `CLIENT` with the client's slug
-(`sia-kit-acme-api`, …) — Render service names are unique per workspace, so
-two clients cannot share them. Commit that.
+(`traceflow-acme-api`, …) — Render service names are unique per workspace,
+so two clients cannot share them. Commit that.
 
 `render.yaml` is a Blueprint: **Render → New → Blueprint → the client's
-repo**. It creates the web service, the worker, and the env group. Fill the
-group with the same values as your `.env` (`ENVIRONMENT=production` is set
-by the Blueprint). Deploy.
+repo**. It creates one web service (the delivery worker runs inside it,
+`WORKER_MODE=inprocess`) and the env group. Fill the group with the same
+values as your `.env` (`ENVIRONMENT=production` is set by the Blueprint).
+Deploy.
 
 If the deploy fails at boot, the log says exactly which required variable is
 missing — that is the fail-closed check, not a bug:
@@ -179,9 +180,11 @@ curl https://<service>.onrender.com/health
 
 You want `"status": "ok"` with `"checks": {"database": true, "destination": true}`.
 
-**Cheaper shape:** delete the `worker` block in `render.yaml` and uncomment
-the `cron` block — it runs `python -m app.worker --once` every 5 minutes for
-about a dollar a month, at the cost of up to 5 minutes of delivery latency.
+**Higher volume?** Set `WORKER_MODE=separate` on the web service and
+uncomment one block in `render.yaml`: the always-on `worker` (~$7/mo,
+delivery within seconds) or the `cron` that runs `python -m app.worker
+--once` every 5 minutes (~$1/mo, up to 5 minutes of latency). The queue is
+the same table either way; nothing changes in the code.
 
 ### 7. Register the Shopify webhook
 
@@ -205,14 +208,15 @@ code), then:
 curl -H "Authorization: Bearer $ADMIN_TOKEN" https://<service>.onrender.com/events?limit=3
 ```
 
-The newest event should be `delivered` within seconds (always-on worker) or
-one cron interval, with `external_id` set to the destination's record id —
+The newest event should be `delivered` within seconds (in-process or
+always-on worker) or one cron interval, with `external_id` set to the
+destination's record id —
 and the record visible in the destination. Done. Hand the client
 `RUNBOOK.md`.
 
 ### Per-engagement checklist
 
-- [ ] New repo from the template (`sia-kit-<client>`), not a fork
+- [ ] New repo from the template (`traceflow-<client>`), not a fork
 - [ ] New Postgres, migration applied
 - [ ] `render.yaml`: every `CLIENT` replaced with the client slug
 - [ ] `mapping.yaml`: `destination:` matches `DESTINATION`, every `to:` exists in the destination
@@ -266,8 +270,8 @@ named X" error until you fix one or the other.
 mapping.yaml                 the per-engagement transform (the file you edit)
 migrations/001_create_events.sql
 src/app/
-  main.py                    FastAPI app: 3 routers + startup checks
-  worker.py                  claim → transform → deliver → retry/dead
+  main.py                    FastAPI app: 3 routers + startup checks + in-process worker task
+  worker.py                  claim → transform → deliver → retry/dead; run_supervised() for in-process
   pipeline.py                Pipeline(transform, deliver) + failure types
   mapping.py                 mapping.yaml schema, path resolution, transforms
   config.py                  Settings + REQUIRED_AT_STARTUP

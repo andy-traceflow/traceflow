@@ -5,18 +5,9 @@ services:
       - "8000:8000"
     env_file:
       - .env
-    restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  worker:
-    build: .
-    command: python -m app.worker
-    env_file:
-      - .env
+    # The delivery worker runs inside this process (WORKER_MODE=inprocess,
+    # the default). To run it separately instead, set WORKER_MODE=separate in
+    # .env and add a second service with `command: python -m app.worker`.
     restart: unless-stopped
     logging:
       driver: json-file

@@ -1,4 +1,4 @@
-"""POST a signed test order to a running SIA Kit, exactly as Shopify would.
+"""POST a signed test order to a running TraceFlow service, exactly as Shopify would.
 
 Verifies HMAC + persistence end-to-end without touching Shopify. Each run
 uses a fresh X-Shopify-Webhook-Id so it creates a new event; pass

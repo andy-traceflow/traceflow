@@ -1,10 +1,12 @@
 """Delivery worker: claims events from the store, transforms, delivers.
 
-Run as an always-on Render background worker:
-    python -m app.worker
+Three ways to run it — all read the same events table, so nothing is lost
+whichever one is running:
 
-Or drain the queue once and exit (cron-style, for cheap deployments):
-    python -m app.worker --once
+  WORKER_MODE=inprocess (default)  a background task inside the web service
+                                   (see app.main lifespan → run_supervised)
+  python -m app.worker             an always-on Render background worker
+  python -m app.worker --once      drain the queue and exit (cron-style)
 
 Retry policy
 ------------
@@ -56,6 +58,7 @@ MAX_ATTEMPTS = 5
 PROCESSING_LEASE_SECONDS = 300  # must exceed the slowest adapter timeout (30s) comfortably
 DEFAULT_BATCH_SIZE = 10
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
+SUPERVISOR_RESTART_DELAY_SECONDS = 10.0
 
 # 4xx statuses that mean "try again later", not "this record is wrong".
 _TRANSIENT_4XX = frozenset({408, 429})
@@ -246,6 +249,36 @@ async def run_forever(
         processed = await run_once(store, pipeline, batch_size=batch_size, alert=alert)
         if processed == 0:
             await asyncio.sleep(poll_interval)
+
+
+async def run_supervised(
+    store: EventStore,
+    pipeline: Pipeline,
+    *,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
+    alert: AlertFn = send_alert,
+    restart_delay: float = SUPERVISOR_RESTART_DELAY_SECONDS,
+) -> None:
+    """run_forever() that survives its own crashes — for the in-process mode.
+
+    Delivery failures never raise (process_one handles them), but a database
+    outage during claim() does. Inside a web process that must not kill the
+    worker task silently: log it, wait, start again. Cancellation passes
+    through so shutdown is clean.
+    """
+    while True:
+        try:
+            await run_forever(
+                store, pipeline, batch_size=batch_size, poll_interval=poll_interval, alert=alert
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "worker loop crashed; restarting", extra={"restart_delay": restart_delay}
+            )
+            await asyncio.sleep(restart_delay)
 
 
 async def _main_async(args: argparse.Namespace, pipeline: Pipeline) -> int:

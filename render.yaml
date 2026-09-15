@@ -1,15 +1,19 @@
 # Per-engagement Render Blueprint. Before deploying a client copy, replace
-# every CLIENT below with the client's slug (e.g. sia-kit-acme-api): Render
+# every CLIENT below with the client's slug (e.g. traceflow-acme-api): Render
 # service and env-group names are unique per workspace, so two clients with
 # the same names would collide.
 #
-# Plans: `starter` is the floor for the web service. Render's free tier spins
-# down after 15 minutes idle and cold-starts in 30-60s, which is longer than
-# Shopify's 5-second webhook timeout — Shopify would retry, so nothing is
-# lost, but every quiet-period order would arrive a minute late.
+# Default shape: ONE web service. The delivery worker runs inside it
+# (WORKER_MODE=inprocess) — the queue is the events table, so nothing is
+# lost across restarts. ~$7/mo on Starter.
+#
+# Plans: `starter` is the floor. Render's free tier spins down after 15
+# minutes idle and cold-starts in 30-60s, longer than Shopify's 5-second
+# webhook timeout — Shopify would retry, so nothing is lost, but every
+# quiet-period order would arrive a minute late.
 services:
   - type: web
-    name: sia-kit-CLIENT-api
+    name: traceflow-CLIENT-api
     runtime: python
     plan: starter
     region: oregon
@@ -21,30 +25,31 @@ services:
         value: production
       - key: PYTHON_VERSION
         value: "3.12"
-      - fromGroup: sia-kit-CLIENT-secrets
+      - key: WORKER_MODE
+        value: inprocess
+      - fromGroup: traceflow-CLIENT-secrets
 
-  # Delivery worker — reads the events table, transforms, pushes to the
-  # destination, retries with backoff. Pick ONE of the two shapes:
+  # Higher volume? Set WORKER_MODE=separate above and uncomment ONE of:
   #
   # (a) always-on background worker (~$7/mo): delivery within seconds.
-  - type: worker
-    name: sia-kit-CLIENT-worker
-    runtime: python
-    plan: starter
-    region: oregon
-    buildCommand: pip install -e .
-    startCommand: python -m app.worker
-    envVars:
-      - key: ENVIRONMENT
-        value: production
-      - key: PYTHON_VERSION
-        value: "3.12"
-      - fromGroup: sia-kit-CLIENT-secrets
+  # - type: worker
+  #   name: traceflow-CLIENT-worker
+  #   runtime: python
+  #   plan: starter
+  #   region: oregon
+  #   buildCommand: pip install -e .
+  #   startCommand: python -m app.worker
+  #   envVars:
+  #     - key: ENVIRONMENT
+  #       value: production
+  #     - key: PYTHON_VERSION
+  #       value: "3.12"
+  #     - fromGroup: traceflow-CLIENT-secrets
   #
   # (b) cron that drains the queue every 5 minutes (~$1/mo): up to 5 minutes
-  #     of latency. Delete the worker block above and uncomment this one.
+  #     of latency.
   # - type: cron
-  #   name: sia-kit-CLIENT-worker
+  #   name: traceflow-CLIENT-worker
   #   runtime: python
   #   schedule: "*/5 * * * *"
   #   buildCommand: pip install -e .
@@ -54,10 +59,10 @@ services:
   #       value: production
   #     - key: PYTHON_VERSION
   #       value: "3.12"
-  #     - fromGroup: sia-kit-CLIENT-secrets
+  #     - fromGroup: traceflow-CLIENT-secrets
 
 envVarGroups:
-  - name: sia-kit-CLIENT-secrets
+  - name: traceflow-CLIENT-secrets
     envVars:
       - key: SUPABASE_DB_URL
         sync: false
@@ -89,10 +94,6 @@ envVarGroups:
       - key: GOOGLE_SHEET_ID
         sync: false
       - key: GOOGLE_SHEET_TAB
-        sync: false
-      # Host allow-list for TrustedHostMiddleware. Leave unset to disable the
-      # check; set to e.g. "*.onrender.com" so Render health checks keep working.
-      - key: ALLOWED_HOSTS
         sync: false
       # Required. Bearer token for GET /events and POST /events/{id}/replay.
       - key: ADMIN_TOKEN

@@ -1,4 +1,5 @@
-"""FastAPI app entrypoint. Wires three routers and the lifecycle.
+"""FastAPI app entrypoint. Wires three routers, the lifecycle, and (by
+default) the in-process delivery worker.
 
 Run locally:
     uvicorn app.main:app --reload --port 8000
@@ -6,6 +7,8 @@ Run locally:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -19,7 +22,9 @@ from app.db import close_pool, init_pool
 from app.log import configure_logging
 from app.pipeline import build_pipeline
 from app.routers import events, health
+from app.services.events import get_event_store
 from app.webhooks import shopify
+from app.worker import run_supervised
 
 _settings = get_settings()
 configure_logging(_settings.log_level, _settings.log_format)
@@ -28,16 +33,16 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Startup: validate fail-closed settings, mapping, adapter; init Sentry + DB pool."""
+    """Startup: validate fail-closed settings, mapping, adapter; init Sentry + DB pool;
+    start the in-process worker. Shutdown: stop the worker, close the pool."""
     settings = get_settings()
 
     # Fail closed: a deploy without its webhook signing secret must not come up.
     require_startup_settings(settings)
     # Load mapping.yaml and construct the destination adapter now, so a bad
     # mapping or missing credentials refuse the boot instead of
-    # dead-lettering the first event. The web service never runs the
-    # pipeline itself — this is purely the startup check.
-    build_pipeline()
+    # dead-lettering the first event.
+    pipeline = build_pipeline()
     logger.info("mapping + destination validated", extra={"destination": settings.destination})
 
     if not settings.alert_webhook_url:
@@ -52,14 +57,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("Sentry initialized")
 
     await init_pool()
+
+    # Durable first, process second — still true in-process: the worker
+    # reads the events table, so a restart just resumes where it left off.
+    worker_task: asyncio.Task[None] | None = None
+    if settings.worker_mode == "inprocess":
+        worker_task = asyncio.create_task(
+            run_supervised(get_event_store(), pipeline), name="delivery-worker"
+        )
+        logger.info("in-process delivery worker started")
+    else:
+        logger.info("WORKER_MODE=separate — run `python -m app.worker` alongside this service")
+
     try:
         yield
     finally:
+        if worker_task is not None:
+            worker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker_task
+            logger.info("in-process delivery worker stopped")
         await close_pool()
 
 
 app = FastAPI(
-    title="SIA Kit",
+    title="TraceFlow",
     version="0.1.0",
     lifespan=lifespan,
 )

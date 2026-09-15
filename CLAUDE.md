@@ -1,13 +1,15 @@
-# CLAUDE.md — SIA Kit
+# CLAUDE.md — TraceFlow
 
-Read this first. It replaces the TraceFlow context entirely; that business
-is retired and none of its domain survives in this repo.
+Read this first. The old multi-tenant TraceFlow *product* (missed-call lead
+recovery, SMS, AI qualification, admin console) is retired and none of its
+domain survives here. The TraceFlow *name* continues on this template.
 
 ## What this is
 
-**SIA Kit** is the delivery toolkit behind a fixed-price productized
-service: *one Shopify event → one destination system, deployed, monitored,
-with a runbook.* Each client engagement is a **fork of this repository**,
+**TraceFlow** is a fixed-price productized integration service; this
+repository is its delivery template: *one Shopify event → one destination
+system, deployed, monitored, with a runbook.* Each client engagement is a
+**copy of this repository**,
 configured by environment variables and one `mapping.yaml`, deployed to its
 own Render service with its own Postgres. Delivered in 5 business days for
 $900, so the template must be **boring, correct, and fast to configure**.
@@ -19,8 +21,11 @@ Destinations: Notion, Monday.com, HubSpot, Slack, Google Sheets.
 1. **Durable first, process second.** `POST /webhooks/shopify/{topic}` does
    exactly verify → insert one `events` row → 200. All transformation and
    delivery happens in `app/worker.py`, reading from that table. Never put
-   work in a `BackgroundTask` — Render instances restart and spin down, and
-   in-process work dies with them.
+   work in a request-scoped `BackgroundTask` — Render instances restart and
+   spin down, and such work dies with them. The worker itself may run
+   *inside* the web process (`WORKER_MODE=inprocess`, the default: a lifespan
+   task running `run_supervised()`) because it reads the table and simply
+   resumes after a restart; that is not the same thing.
 2. **Config in env vars and one mapping file.** No database-backed
    configuration of any kind. `.env` + `mapping.yaml` fully describe a
    deployment. If you are tempted to add a settings table, the answer is
@@ -39,12 +44,14 @@ with two `mapping.yaml`s — never a branch in code, never a row in a table.
 The old rule "every table has `client_id`, every query filters by it" is
 inverted here on purpose.
 
-**This repository is the template. Nothing deploys `main`.** Each engagement
-is a new repo created from it (GitHub "Use this template"), with its own
-Render Blueprint (`render.yaml` with `CLIENT` replaced), its own Postgres,
-its own env group. The Render service `traceflow-api` that used to track
-`main` has auto-deploy off and belongs to the retired product; do not wire
-this repo to any service.
+**This repository is the template. `main` deploys to exactly one place:** the
+demo service `traceflow-api` on Render (Slack destination, in-process
+worker, Supabase project `ienjxmyhttuzxoaeramo` wiped and re-created with
+only the `events` table on 2026-09-15). It exists to prove the template
+continuously. Each client engagement is a new repo created from this one
+(GitHub "Use this template"), with its own Render Blueprint (`render.yaml`
+with `CLIENT` replaced), its own Postgres, its own env group. Never point a
+second service at this repository.
 
 ## Map
 
@@ -52,8 +59,8 @@ this repo to any service.
 mapping.yaml                 the per-engagement transform — the file a fork edits
 migrations/001_create_events.sql   the durable store (only table)
 src/app/
-  main.py        3 routers (webhook, health, events) + startup checks
-  worker.py      claim (FOR UPDATE SKIP LOCKED, leased) → transform → deliver → retry/dead
+  main.py        3 routers (webhook, health, events) + startup checks + in-process worker task
+  worker.py      claim (FOR UPDATE SKIP LOCKED, leased) → transform → deliver → retry/dead; run_supervised()
   pipeline.py    Pipeline(transform, deliver); PermanentDeliveryError / TransientDeliveryError / TransformError
   mapping.py     mapping.yaml schema (Pydantic, extra=forbid), JSONPath/dotted paths, transforms, build_record()
   config.py      Settings + REQUIRED_AT_STARTUP

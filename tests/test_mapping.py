@@ -69,7 +69,7 @@ def test_repo_root_mapping_yaml_is_valid():
     """The template's own mapping.yaml must always load — forks start from it."""
     m = load_mapping()
     assert m.source == "shopify"
-    assert m.destination == "notion"
+    assert m.destination == "slack"
     assert m.key == "Order ID"
     record = build_record(m, ORDER)
     assert record["Order ID"] == "820982911946154508"

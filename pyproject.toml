@@ -1,7 +1,7 @@
 [project]
 name = "traceflow"
 version = "0.1.0"
-description = "SIA Kit — single-tenant Shopify → destination integration template"
+description = "TraceFlow — single-tenant Shopify → destination integration template"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
